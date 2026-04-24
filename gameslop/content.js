@@ -123,6 +123,37 @@
     return "";
   }
 
+  function getCreatorInfo() {
+    const out = { ownerId: "", ownerName: "", ownerUrl: "", groupId: "", groupName: "", groupUrl: "" };
+    const creatorAnchor =
+      document.querySelector("a[href*='/users/'][class*='creator' i]") ||
+      document.querySelector("a[href*='/communities/'][class*='creator' i]") ||
+      document.querySelector("a[href*='/groups/'][class*='creator' i]") ||
+      document.querySelector("[class*='game-creator'] a[href*='/users/']") ||
+      document.querySelector("[class*='game-creator'] a[href*='/communities/']") ||
+      document.querySelector("[class*='game-creator'] a[href*='/groups/']") ||
+      document.querySelector("[class*='creator-name'] a") ||
+      document.querySelector("a.text-name[href*='/users/']") ||
+      document.querySelector("a.text-name[href*='/communities/']");
+
+    if (creatorAnchor) {
+      const href = creatorAnchor.getAttribute("href") || "";
+      const txt = (creatorAnchor.textContent || "").trim();
+      const um = href.match(/\/users\/(\d+)/);
+      const gm = href.match(/\/(?:groups|communities)\/(\d+)/);
+      if (um) {
+        out.ownerId = um[1];
+        out.ownerName = txt;
+        out.ownerUrl = location.origin + "/users/" + um[1] + "/profile";
+      } else if (gm) {
+        out.groupId = gm[1];
+        out.groupName = txt;
+        out.groupUrl = location.origin + "/communities/" + gm[1];
+      }
+    }
+    return out;
+  }
+
   function getGameStatus(gameId) {
     if (!gameId) return STATUS.NONE;
     const g = GS.games[String(gameId)];
@@ -173,21 +204,43 @@
     const old = document.getElementById("gs-modal-wrap");
     if (old) old.remove();
 
+    const g = GS.games[String(gameId)];
+    if (g && (g.pollResolved || g.status === STATUS.CONFIRMED || g.status === STATUS.BANNED)) {
+      toast("This game was already reviewed — cannot re-report", "err");
+      return;
+    }
+    if (g && g.status === STATUS.QUEUED && g.pollMessageId) {
+      toast("This game is already pending admin review", "info");
+      return;
+    }
+
+    const creator = getCreatorInfo();
+
     const wrap = document.createElement("div");
     wrap.id = "gs-modal-wrap";
     wrap.innerHTML = `
       <div class="gs-modal-back"></div>
       <div class="gs-modal">
         <div class="gs-modal-head">
-          <div class="gs-modal-title">Report AI-Generated Game</div>
+          <div class="gs-modal-title">Report AI-generated content</div>
           <button class="gs-modal-x" type="button" aria-label="Close">×</button>
         </div>
         <div class="gs-modal-body">
           <div class="gs-row"><span class="gs-k">Game:</span> <span class="gs-v" id="gs-m-name"></span></div>
           <div class="gs-row"><span class="gs-k">ID:</span> <span class="gs-v" id="gs-m-id"></span></div>
+
+          <div class="gs-seg">
+            <div class="gs-seg-lbl">Flag target</div>
+            <div class="gs-seg-opts">
+              <label class="gs-seg-opt"><input type="radio" name="gs-target" value="game" checked><span>Game</span></label>
+              <label class="gs-seg-opt gs-seg-opt-owner${creator.ownerId ? "" : " gs-seg-disabled"}"><input type="radio" name="gs-target" value="owner" ${creator.ownerId ? "" : "disabled"}><span>Owner${creator.ownerName ? " (" + escapeHtml(creator.ownerName) + ")" : ""}</span></label>
+              <label class="gs-seg-opt gs-seg-opt-group${creator.groupId ? "" : " gs-seg-disabled"}"><input type="radio" name="gs-target" value="group" ${creator.groupId ? "" : "disabled"}><span>Group${creator.groupName ? " (" + escapeHtml(creator.groupName) + ")" : ""}</span></label>
+            </div>
+          </div>
+
           <label class="gs-label" for="gs-m-reason">Reason (optional)</label>
           <textarea id="gs-m-reason" maxlength="280" placeholder="e.g. AI thumbnail, generic description, recycled assets..."></textarea>
-          <div class="gs-hint">Your report is sent to admin reviewers. The game will also be blocked locally in your browser.</div>
+          <div class="gs-hint">Your report is posted to admin review. A game flagged here is also blocked locally until admins vote.</div>
         </div>
         <div class="gs-modal-foot">
           <button class="gs-btn gs-btn-ghost" id="gs-m-cancel" type="button">Cancel</button>
@@ -208,16 +261,22 @@
     $("#gs-m-send", wrap).addEventListener("click", async () => {
       const reason = ($("#gs-m-reason", wrap).value || "").trim();
       const btn = $("#gs-m-send", wrap);
+      const targetEl = wrap.querySelector('input[name="gs-target"]:checked');
+      const targetType = targetEl ? targetEl.value : "game";
       btn.disabled = true;
       btn.textContent = "Sending...";
 
       const url = location.origin + "/games/" + gameId;
-      const r = await sendMsg({
+      const payload = {
         action: "report",
-        gameId, gameName, gameUrl: url, reason,
-        thumb: thumb || "",
+        targetType,
+        gameId, gameName, gameUrl: url,
+        ownerId: creator.ownerId, ownerName: creator.ownerName, ownerUrl: creator.ownerUrl,
+        groupId: creator.groupId, groupName: creator.groupName, groupUrl: creator.groupUrl,
+        reason, thumb: thumb || "",
         reporter: (navigator.userAgent || "").slice(0, 40)
-      });
+      };
+      const r = await sendMsg(payload);
 
       if (r && r.ok) {
         await refreshState();
@@ -229,11 +288,48 @@
         let why = (r && r.reason) || "error";
         if (why === "rate_limit") why = "too many reports, try again soon";
         else if (why === "duplicate") why = "already reported recently";
+        else if (why === "already_reviewed") why = "this target was already reviewed";
+        else if (why === "already_flagged") why = "this target is already flagged";
+        else if (why === "already_pending") why = "already pending review";
         else why = "network error";
         toast("Report failed: " + why, "err");
         btn.disabled = false;
         btn.textContent = "Queue for Review";
       }
+    });
+  }
+
+  function openConfirmModal(opts) {
+    const old = document.getElementById("gs-modal-wrap");
+    if (old) old.remove();
+
+    const wrap = document.createElement("div");
+    wrap.id = "gs-modal-wrap";
+    wrap.innerHTML = `
+      <div class="gs-modal-back"></div>
+      <div class="gs-modal gs-modal-confirm">
+        <div class="gs-modal-head">
+          <div class="gs-modal-title">${escapeHtml(opts.title || "Confirm")}</div>
+          <button class="gs-modal-x" type="button" aria-label="Close">×</button>
+        </div>
+        <div class="gs-modal-body">
+          <div class="gs-confirm-body">${escapeHtml(opts.body || "")}</div>
+          ${opts.warn ? `<div class="gs-p-warn" style="margin-top:12px;">${escapeHtml(opts.warn)}</div>` : ""}
+        </div>
+        <div class="gs-modal-foot">
+          <button class="gs-btn gs-btn-ghost" id="gs-c-cancel" type="button">Cancel</button>
+          <button class="gs-btn ${opts.danger ? "gs-btn-danger-solid" : "gs-btn-primary"}" id="gs-c-ok" type="button">${escapeHtml(opts.okText || "Confirm")}</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(wrap);
+    const close = () => wrap.remove();
+    $(".gs-modal-x", wrap).addEventListener("click", close);
+    $(".gs-modal-back", wrap).addEventListener("click", close);
+    $("#gs-c-cancel", wrap).addEventListener("click", close);
+    $("#gs-c-ok", wrap).addEventListener("click", () => {
+      close();
+      if (typeof opts.onConfirm === "function") opts.onConfirm();
     });
   }
 
@@ -308,31 +404,45 @@
         return;
       }
 
-      GS.inFlight.add(flightKey);
-      const allBtns = panel.querySelectorAll("button[data-act]");
-      allBtns.forEach((x) => x.disabled = true);
-      try {
-        if (act === "report") {
-          openReportModal(gameId, gameName, thumb);
-        } else if (act === "unlock-temp") {
-          await sendMsg({ action: "unlock", gameId, permanent: false });
-          await refreshState();
-          applyBlocksEverywhere();
-          renderPanelIfOnDetail();
-          toast("Unlocked for this session", "ok");
-        } else if (act === "unlock-perm") {
-          await sendMsg({ action: "unlock", gameId, permanent: true });
-          await refreshState();
-          applyBlocksEverywhere();
-          renderPanelIfOnDetail();
-          toast("Removed from blocklist", "ok");
-        }
-      } finally {
-        GS.inFlight.delete(flightKey);
-        const stillThere = document.getElementById("gs-panel");
-        if (stillThere) {
-          stillThere.querySelectorAll("button[data-act]").forEach((x) => x.disabled = false);
-        }
+      if (act === "report") {
+        openReportModal(gameId, gameName, thumb);
+        return;
+      }
+
+      if (act === "unlock-temp") {
+        openConfirmModal({
+          title: "Unlock this game?",
+          body: "This game is flagged as AI-generated. Are you sure you want to unlock it for this session?",
+          warn: "Unlock is temporary and the game will be re-blocked on reload.",
+          okText: "Unlock for this session",
+          danger: true,
+          onConfirm: async () => {
+            await sendMsg({ action: "unlock", gameId, permanent: false });
+            await refreshState();
+            applyBlocksEverywhere();
+            renderPanelIfOnDetail();
+            toast("Unlocked for this session", "ok");
+          }
+        });
+        return;
+      }
+
+      if (act === "unlock-perm") {
+        openConfirmModal({
+          title: "Remove from GameSlop list?",
+          body: "This permanently removes the game from your local blocklist. You will be able to play it again.",
+          warn: "If admins flagged this game as AI or banned it, removing it is strongly discouraged.",
+          okText: "Remove permanently",
+          danger: true,
+          onConfirm: async () => {
+            await sendMsg({ action: "unlock", gameId, permanent: true });
+            await refreshState();
+            applyBlocksEverywhere();
+            renderPanelIfOnDetail();
+            toast("Removed from blocklist", "ok");
+          }
+        });
+        return;
       }
     });
   }
@@ -365,17 +475,23 @@
       : `<span>${escapeHtml(initials)}</span>`;
 
     let actionsHtml;
+    const reviewed = g && (g.pollResolved || status === STATUS.CONFIRMED || status === STATUS.BANNED);
     if (blocked) {
       actionsHtml =
         `<button class="gs-btn gs-btn-ghost" data-act="unlock-temp" type="button">Unlock (session)</button>` +
-        `<button class="gs-btn gs-btn-ghost" data-act="unlock-perm" type="button">Remove from list</button>`;
+        `<button class="gs-btn gs-btn-danger" data-act="unlock-perm" type="button">Remove from list</button>`;
+    } else if (reviewed) {
+      const aiPressed = myVote === "ai" ? " gs-pressed" : "";
+      const cleanPressed = myVote === "clean" ? " gs-pressed" : "";
+      actionsHtml =
+        `<button class="gs-btn gs-btn-ghost${cleanPressed}" data-act="vote-clean" type="button">Looks legit</button>` +
+        `<button class="gs-btn gs-btn-primary${aiPressed}" data-act="vote-ai" type="button">Mark as AI</button>`;
     } else if (isAlreadyReported) {
       const aiPressed = myVote === "ai" ? " gs-pressed" : "";
       const cleanPressed = myVote === "clean" ? " gs-pressed" : "";
       actionsHtml =
         `<button class="gs-btn gs-btn-ghost${cleanPressed}" data-act="vote-clean" type="button">Looks legit</button>` +
-        `<button class="gs-btn gs-btn-primary${aiPressed}" data-act="vote-ai" type="button">Mark as AI</button>` +
-        `<button class="gs-btn gs-btn-danger" data-act="report" type="button">Report</button>`;
+        `<button class="gs-btn gs-btn-primary${aiPressed}" data-act="vote-ai" type="button">Mark as AI</button>`;
     } else {
       actionsHtml = `<button class="gs-btn gs-btn-primary gs-btn-wide" data-act="report" type="button">Queue for Review</button>`;
     }
@@ -539,17 +655,27 @@
       </div>
     `;
 
+    const g = GS.games[String(gameId)];
+    const reviewed = g && (g.pollResolved || status === STATUS.CONFIRMED || status === STATUS.BANNED);
+    const pending = g && g.status === STATUS.QUEUED && g.pollMessageId && !g.pollResolved;
+
     const buttons = blocked
       ? `<button type="button" data-act="unlock-temp">Unlock (session)</button>
          <button type="button" data-act="unlock-perm">Remove from list</button>`
-      : (status === STATUS.NONE
-          ? `<button type="button" data-act="report">Queue for Review</button>
-             <button type="button" data-act="vote-ai">Mark as AI</button>
-             <button type="button" data-act="block">Block locally</button>`
-          : `<button type="button" data-act="vote-ai">Mark as AI</button>
+      : (reviewed
+          ? `<button type="button" data-act="vote-ai">Mark as AI</button>
              <button type="button" data-act="vote-clean">Looks legit</button>
-             <button type="button" data-act="report">Report</button>
-             <button type="button" data-act="block">Block locally</button>`);
+             <button type="button" data-act="block">Block locally</button>`
+          : (pending
+              ? `<button type="button" data-act="vote-ai">Mark as AI</button>
+                 <button type="button" data-act="vote-clean">Looks legit</button>
+                 <button type="button" data-act="block">Block locally</button>`
+              : (status === STATUS.NONE
+                  ? `<button type="button" data-act="report">Queue for Review</button>
+                     <button type="button" data-act="block">Block locally</button>`
+                  : `<button type="button" data-act="vote-ai">Mark as AI</button>
+                     <button type="button" data-act="vote-clean">Looks legit</button>
+                     <button type="button" data-act="block">Block locally</button>`)));
 
     menu.innerHTML = header + buttons + `<button type="button" data-act="close">Cancel</button>`;
     document.body.appendChild(menu);
@@ -603,15 +729,32 @@
         applyBlocksEverywhere();
         toast("Game blocked locally", "ok");
       } else if (act === "unlock-temp") {
-        await sendMsg({ action: "unlock", gameId, permanent: false });
-        await refreshState();
-        applyBlocksEverywhere();
-        toast("Unlocked for this session", "ok");
+        openConfirmModal({
+          title: "Unlock this game?",
+          body: "This game is flagged as AI-generated. Unlock it for this session only?",
+          okText: "Unlock",
+          danger: true,
+          onConfirm: async () => {
+            await sendMsg({ action: "unlock", gameId, permanent: false });
+            await refreshState();
+            applyBlocksEverywhere();
+            toast("Unlocked for this session", "ok");
+          }
+        });
       } else if (act === "unlock-perm") {
-        await sendMsg({ action: "unlock", gameId, permanent: true });
-        await refreshState();
-        applyBlocksEverywhere();
-        toast("Removed from list", "ok");
+        openConfirmModal({
+          title: "Remove from list?",
+          body: "This permanently removes the game from your local blocklist.",
+          warn: "If admins confirmed this as AI, removing it is discouraged.",
+          okText: "Remove permanently",
+          danger: true,
+          onConfirm: async () => {
+            await sendMsg({ action: "unlock", gameId, permanent: true });
+            await refreshState();
+            applyBlocksEverywhere();
+            toast("Removed from list", "ok");
+          }
+        });
       }
     });
   }

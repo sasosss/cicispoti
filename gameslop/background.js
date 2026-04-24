@@ -88,13 +88,15 @@ const STATE = {
 const DEFAULTS = {
   enabled: true,
   games: {},
+  owners: {},
+  groups: {},
   myVotes: {},
   userSalt: null,
   reportsSent: 0,
   reportsAccepted: 0,
   reportsRejected: 0,
   totalVotes: 0,
-  lastSeenVersion: "1.1.0",
+  lastSeenVersion: "1.2.0",
   remoteSyncUrl: ""
 };
 
@@ -197,32 +199,60 @@ async function postReport(report) {
   const { userSalt, reportsSent } = await getStorage(["userSalt", "reportsSent"]);
   const userHash = (await sha256Hex((userSalt || "x") + "::" + (report.reporter || "anon"))).slice(0, 16);
 
+  const targetType = report.targetType || "game";
   const body = {
-    type: "ai_game_report",
+    type: "ai_" + targetType + "_report",
+    target_type: targetType,
     game_id: String(report.gameId || ""),
     game_name: String(report.gameName || "").slice(0, 140),
     game_url: String(report.gameUrl || "").slice(0, 500),
+    owner_id: String(report.ownerId || ""),
+    owner_name: String(report.ownerName || "").slice(0, 80),
+    owner_url: String(report.ownerUrl || "").slice(0, 300),
+    group_id: String(report.groupId || ""),
+    group_name: String(report.groupName || "").slice(0, 80),
+    group_url: String(report.groupUrl || "").slice(0, 300),
     reason: String(report.reason || "").slice(0, 280),
     reporter_hash: userHash,
-    ext_version: "1.1.0",
+    ext_version: "1.2.0",
     ts: Date.now()
   };
   body.sig = await hmacLike(JSON.stringify(body));
 
+  const targetLine = targetType === "game"
+    ? "Gioco: **" + body.game_name + "** · `" + body.game_id + "`\n" + body.game_url
+    : targetType === "owner"
+      ? "Owner: **" + body.owner_name + "** · `" + body.owner_id + "`\n" + body.owner_url
+      : "Gruppo: **" + body.group_name + "** · `" + body.group_id + "`\n" + body.group_url;
+
+  const header = targetType === "game"
+    ? "🚩 **Nuova segnalazione AI (gioco)**"
+    : targetType === "owner"
+      ? "👤 **Segnalazione creator AI**"
+      : "🏷️ **Segnalazione gruppo AI**";
+
+  const questionName = targetType === "game"
+    ? body.game_name
+    : targetType === "owner"
+      ? body.owner_name
+      : body.group_name;
+
   const summary =
-    "**Nuova segnalazione AI** — " + body.game_name + "\n" +
-    "ID: `" + body.game_id + "` · " + body.game_url + "\n" +
+    "@everyone\n" +
+    header + "\n" +
+    targetLine + "\n" +
     "Motivo: " + (body.reason || "_(nessuno)_") + "\n" +
     "Reporter: `" + body.reporter_hash + "` · sig `" + body.sig + "` · v" + body.ext_version;
 
   const pollPayload = {
     username: "GameSlop",
     content: summary,
+    allowed_mentions: { parse: ["everyone"] },
     poll: {
-      question: { text: "Confermare flag AI per \"" + body.game_name.slice(0, 80) + "\"?" },
+      question: { text: "Confermare flag AI per \"" + String(questionName || "").slice(0, 80) + "\"?" },
       answers: [
         { poll_media: { text: "Conferma (flag AI)", emoji: { name: "🚫" } } },
-        { poll_media: { text: "Rifiuta (gioco pulito)", emoji: { name: "✅" } } },
+        { poll_media: { text: "Rifiuta (pulito)", emoji: { name: "✅" } } },
         { poll_media: { text: "Ban (più severo)", emoji: { name: "🔨" } } }
       ],
       duration: 24,
@@ -231,6 +261,7 @@ async function postReport(report) {
     gs_payload: body
   };
 
+  let messageId = "";
   try {
     const res = await fetch(url + "?wait=true", {
       method: "POST",
@@ -240,40 +271,116 @@ async function postReport(report) {
       referrerPolicy: "no-referrer",
       mode: "cors"
     });
-    if (!res.ok && res.status !== 204) {
-      return { ok: false, reason: "net" };
-    }
-    let messageId = "";
+    if (!res.ok && res.status !== 204) return { ok: false, reason: "net" };
     try {
       const j = await res.json();
       if (j && j.id) messageId = String(j.id);
     } catch (e) { }
     await setStorage({ reportsSent: (reportsSent || 0) + 1 });
-    return { ok: true, messageId };
   } catch (e) {
     return { ok: false, reason: "net" };
   }
+
+  try {
+    const dbFields = [
+      { name: "Type", value: targetType, inline: true },
+      { name: "Target ID", value: "`" + (body.game_id || body.owner_id || body.group_id || "-") + "`", inline: true },
+      { name: "Reporter", value: "`" + body.reporter_hash + "`", inline: true },
+      { name: "Reason", value: (body.reason || "_(nessuno)_").slice(0, 300) },
+      { name: "Sig", value: "`" + body.sig + "`", inline: true },
+      { name: "Poll msg", value: messageId ? "`" + messageId + "`" : "`-`", inline: true },
+      { name: "Version", value: body.ext_version, inline: true }
+    ];
+    if (body.owner_name) dbFields.push({ name: "Owner", value: body.owner_name + (body.owner_url ? " — " + body.owner_url : ""), inline: false });
+    if (body.group_name) dbFields.push({ name: "Group", value: body.group_name + (body.group_url ? " — " + body.group_url : ""), inline: false });
+
+    const dbPayload = {
+      username: "GameSlop DB",
+      content: "`[DB] " + targetType + " #" + (body.game_id || body.owner_id || body.group_id || "-") + "`",
+      allowed_mentions: { parse: [] },
+      embeds: [{
+        title: "[GameSlop DB] " + (questionName || "").slice(0, 100),
+        url: body.game_url || body.owner_url || body.group_url || undefined,
+        description: (body.reason || "").slice(0, 280),
+        color: targetType === "owner" ? 10181046 : targetType === "group" ? 15844367 : 15548997,
+        fields: dbFields,
+        timestamp: new Date(body.ts).toISOString(),
+        footer: { text: "GameSlop private database" }
+      }],
+      gs_db_record: body
+    };
+    await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(dbPayload),
+      credentials: "omit",
+      referrerPolicy: "no-referrer",
+      mode: "cors"
+    });
+  } catch (e) { }
+
+  return { ok: true, messageId };
 }
 
 async function handleReport(msg) {
-  if (!msg || !msg.gameId) return { ok: false, reason: "bad_input" };
+  if (!msg) return { ok: false, reason: "bad_input" };
+  const targetType = msg.targetType || "game";
+  const targetId = String(msg.gameId || msg.ownerId || msg.groupId || "");
+  if (!targetId) return { ok: false, reason: "bad_input" };
   if (!rateLimitOk()) return { ok: false, reason: "rate_limit" };
-  if (!dedupeCheck(msg.gameId)) return { ok: false, reason: "duplicate" };
+
+  if (targetType === "game") {
+    const { games } = await getStorage(["games"]);
+    const existing = (games || {})[targetId];
+    if (existing && existing.pollResolved) {
+      return { ok: false, reason: "already_reviewed", status: existing.status };
+    }
+    if (existing && (existing.status === STATUS.CONFIRMED || existing.status === STATUS.BANNED)) {
+      return { ok: false, reason: "already_flagged", status: existing.status };
+    }
+    if (existing && existing.status === STATUS.QUEUED && existing.pollMessageId) {
+      return { ok: false, reason: "already_pending" };
+    }
+  }
+
+  if (!dedupeCheck(targetType + ":" + targetId)) return { ok: false, reason: "duplicate" };
   STATE.reportHistory.push(Date.now());
 
   const r = await postReport(msg);
   if (r.ok) {
-    await upsertGame(msg.gameId, {
-      name: msg.gameName || "",
-      status: STATUS.QUEUED,
-      source: "user_report",
-      thumb: msg.thumb || "",
-      unlocked: false,
-      lastReportedAt: Date.now(),
-      pollMessageId: r.messageId || "",
-      pollCheckedAt: 0,
-      pollResolved: false
-    });
+    if (targetType === "game") {
+      await upsertGame(targetId, {
+        name: msg.gameName || "",
+        status: STATUS.QUEUED,
+        source: "user_report",
+        thumb: msg.thumb || "",
+        unlocked: false,
+        lastReportedAt: Date.now(),
+        pollMessageId: r.messageId || "",
+        pollCheckedAt: 0,
+        pollResolved: false,
+        ownerId: msg.ownerId || "",
+        ownerName: msg.ownerName || "",
+        groupId: msg.groupId || "",
+        groupName: msg.groupName || ""
+      });
+    } else {
+      const key = targetType + "s";
+      const cur = await getStorage([key]);
+      const map = cur[key] || {};
+      map[targetId] = {
+        id: targetId,
+        type: targetType,
+        name: targetType === "owner" ? (msg.ownerName || "") : (msg.groupName || ""),
+        url: targetType === "owner" ? (msg.ownerUrl || "") : (msg.groupUrl || ""),
+        status: STATUS.QUEUED,
+        pollMessageId: r.messageId || "",
+        pollResolved: false,
+        pollCheckedAt: 0,
+        addedAt: Date.now()
+      };
+      await setStorage({ [key]: map });
+    }
     const { totalVotes } = await getStorage(["totalVotes"]);
     await setStorage({ totalVotes: (totalVotes || 0) + 1 });
     setTimeout(() => { checkPendingPolls().catch(() => {}); }, 2500);
@@ -454,12 +561,14 @@ async function handleUnlock(gameId, permanent) {
 
 async function handleGetState() {
   const cur = await getStorage([
-    "enabled", "games", "myVotes", "reportsSent", "reportsAccepted",
-    "reportsRejected", "totalVotes", "remoteSyncUrl"
+    "enabled", "games", "owners", "groups", "myVotes", "reportsSent",
+    "reportsAccepted", "reportsRejected", "totalVotes", "remoteSyncUrl"
   ]);
   return {
     enabled: cur.enabled !== false,
     games: cur.games || {},
+    owners: cur.owners || {},
+    groups: cur.groups || {},
     myVotes: cur.myVotes || {},
     reportsSent: cur.reportsSent || 0,
     reportsAccepted: cur.reportsAccepted || 0,
@@ -516,6 +625,8 @@ async function syncRemote() {
 async function handleClearData() {
   await setStorage({
     games: {},
+    owners: {},
+    groups: {},
     myVotes: {},
     reportsSent: 0,
     reportsAccepted: 0,
@@ -576,6 +687,14 @@ api.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       if (msg.action === "checkPolls") {
         const r = await checkPendingPolls();
         return sendResponse(r);
+      }
+      if (msg.action === "removeCreator") {
+        const kind = msg.kind === "group" ? "groups" : "owners";
+        const cur = await getStorage([kind]);
+        const map = cur[kind] || {};
+        if (map[String(msg.id)]) delete map[String(msg.id)];
+        await setStorage({ [kind]: map });
+        return sendResponse({ ok: true });
       }
       if (msg.action === "clearData") return sendResponse(await handleClearData());
 

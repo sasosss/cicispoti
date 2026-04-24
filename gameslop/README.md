@@ -30,11 +30,11 @@ Prebuilt archives live in [`dist/`](../dist) (run `./scripts/build.sh` to regene
 
 ### Chrome / Edge / Brave
 1. `chrome://extensions` → enable Developer mode
-2. Either drag `dist/gameslop-1.1.0.zip` onto the page, or unzip and click "Load unpacked" on the extracted folder.
+2. Either drag `dist/gameslop-1.2.0.zip` onto the page, or unzip and click "Load unpacked" on the extracted folder.
 
 ### Firefox (temporary install)
 1. `about:debugging#/runtime/this-firefox`
-2. "Load Temporary Add-on…" → select `dist/gameslop-1.1.0.xpi`
+2. "Load Temporary Add-on…" → select `dist/gameslop-1.2.0.xpi`
 
 Reports are sent automatically on submission. No setup required.
 
