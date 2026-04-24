@@ -27,13 +27,15 @@ Cross-browser extension (Chrome + Firefox, Manifest V3) that flags AI-generated 
 
 ## Install
 
+Prebuilt archives live in [`dist/`](../dist) (run `./scripts/build.sh` to regenerate).
+
 ### Chrome / Edge / Brave
 1. `chrome://extensions` → enable Developer mode
-2. "Load unpacked" → select the `gameslop/` folder
+2. Either drag `dist/gameslop-1.1.0.zip` onto the page, or unzip and click "Load unpacked" on the extracted folder.
 
-### Firefox
+### Firefox (temporary install)
 1. `about:debugging#/runtime/this-firefox`
-2. "Load Temporary Add-on" → select `gameslop/manifest.json`
+2. "Load Temporary Add-on…" → select `dist/gameslop-1.1.0.xpi`
 
 ## Admin setup
 
