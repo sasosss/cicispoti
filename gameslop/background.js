@@ -271,7 +271,9 @@ async function postReport(report) {
       referrerPolicy: "no-referrer",
       mode: "cors"
     });
-    if (!res.ok && res.status !== 204) return { ok: false, reason: "net" };
+    if (!res.ok && res.status !== 204) {
+      return { ok: false, reason: "net" };
+    }
     try {
       const j = await res.json();
       if (j && j.id) messageId = String(j.id);
