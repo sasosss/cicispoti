@@ -22,10 +22,14 @@
   const GS = {
     enabled: true,
     games: {},
+    myVotes: {},
     processedCards: new WeakSet(),
     lastUrl: location.href,
     lastGameId: null,
-    panelPinned: false
+    panelPinned: false,
+    panelBound: false,
+    panelLastSig: "",
+    inFlight: new Set()
   };
 
   function $(sel, root) { return (root || document).querySelector(sel); }
@@ -45,6 +49,7 @@
     if (s && typeof s === "object") {
       GS.enabled = s.enabled !== false;
       GS.games = s.games || {};
+      GS.myVotes = s.myVotes || {};
     }
   }
 
@@ -203,6 +208,81 @@
     if (p) p.remove();
   }
 
+  function ensurePanel() {
+    let panel = document.getElementById("gs-panel");
+    if (panel) return panel;
+    panel = document.createElement("div");
+    panel.id = "gs-panel";
+    panel.className = "gs-panel";
+    document.body.appendChild(panel);
+    return panel;
+  }
+
+  function bindPanelOnce(panel) {
+    if (GS.panelBound) return;
+    GS.panelBound = true;
+
+    panel.addEventListener("click", async (e) => {
+      const closeBtn = e.target.closest(".gs-p-close");
+      if (closeBtn) {
+        panel.classList.add("gs-hidden");
+        return;
+      }
+      const b = e.target.closest("button[data-act]");
+      if (!b || b.disabled) return;
+      const act = b.dataset.act;
+      const gameId = panel.dataset.gameId;
+      const gameName = panel.dataset.gameName || "";
+      const thumb = panel.dataset.thumb || "";
+      if (!gameId) return;
+
+      const flightKey = act + ":" + gameId;
+      if (GS.inFlight.has(flightKey)) return;
+      GS.inFlight.add(flightKey);
+      const allBtns = panel.querySelectorAll("button[data-act]");
+      allBtns.forEach((x) => x.disabled = true);
+
+      try {
+        if (act === "report") {
+          openReportModal(gameId, gameName, thumb);
+        } else if (act === "vote-ai" || act === "vote-clean") {
+          const vote = act === "vote-ai" ? "ai" : "clean";
+          if (GS.myVotes[gameId] === vote) {
+            toast("You already voted this", "info");
+          } else {
+            const r = await sendMsg({ action: "vote", gameId, vote, info: { name: gameName, thumb } });
+            if (r && r.ok) {
+              await refreshState();
+              applyBlocksEverywhere();
+              renderPanelIfOnDetail();
+              toast(vote === "ai" ? "Marked as AI" : "Vote recorded", "ok");
+            } else {
+              toast("Vote failed", "err");
+            }
+          }
+        } else if (act === "unlock-temp") {
+          await sendMsg({ action: "unlock", gameId, permanent: false });
+          await refreshState();
+          applyBlocksEverywhere();
+          renderPanelIfOnDetail();
+          toast("Unlocked for this session", "ok");
+        } else if (act === "unlock-perm") {
+          await sendMsg({ action: "unlock", gameId, permanent: true });
+          await refreshState();
+          applyBlocksEverywhere();
+          renderPanelIfOnDetail();
+          toast("Removed from blocklist", "ok");
+        }
+      } finally {
+        GS.inFlight.delete(flightKey);
+        const stillThere = document.getElementById("gs-panel");
+        if (stillThere) {
+          stillThere.querySelectorAll("button[data-act]").forEach((x) => x.disabled = false);
+        }
+      }
+    });
+  }
+
   function buildPanel(gameId) {
     const gameName = getCurrentGameName();
     const thumb = getCurrentGameThumb();
@@ -210,92 +290,75 @@
     const status = getGameStatus(gameId);
     const votesAi = g.votesAi || 0;
     const votesClean = g.votesClean || 0;
-
-    let panel = document.getElementById("gs-panel");
-    if (!panel) {
-      panel = document.createElement("div");
-      panel.id = "gs-panel";
-      panel.className = "gs-panel";
-      document.body.appendChild(panel);
-    }
+    const myVote = GS.myVotes[String(gameId)] || "";
 
     const isAlreadyReported = status !== STATUS.NONE;
     const blocked = GS.enabled && isBlocked(gameId);
+
+    const sig = [gameId, status, blocked ? 1 : 0, votesAi, votesClean, myVote, gameName].join("|");
+    if (sig === GS.panelLastSig && document.getElementById("gs-panel")) return;
+    GS.panelLastSig = sig;
+
+    const panel = ensurePanel();
+    panel.classList.remove("gs-hidden");
+    panel.dataset.gameId = gameId;
+    panel.dataset.gameName = gameName;
+    panel.dataset.thumb = thumb;
 
     const initials = (gameName || "?").trim().charAt(0).toUpperCase() || "?";
     const thumbHtml = thumb
       ? `<img src="${escapeAttr(thumb)}" alt="">`
       : `<span>${escapeHtml(initials)}</span>`;
 
-    panel.innerHTML = `
-      <div class="gs-panel-card">
-        <div class="gs-panel-head">
-          <div class="gs-p-thumb">${thumbHtml}</div>
-          <div class="gs-p-titles">
-            <div class="gs-p-name" title="${escapeAttr(gameName)}">${escapeHtml(gameName || "(unknown)")}</div>
-            <div class="gs-p-id">ID: ${escapeHtml(gameId)}</div>
-            <div class="gs-badge ${statusBadgeClass(status)}">
-              <span class="gs-dot ${statusDotClass(status)}"></span>
-              ${escapeHtml(STATUS_LABEL[status] || "Not Flagged")}
-            </div>
-          </div>
-          <button class="gs-p-close" type="button" aria-label="Close">×</button>
-        </div>
+    let actionsHtml;
+    if (blocked) {
+      actionsHtml =
+        `<button class="gs-btn gs-btn-ghost" data-act="unlock-temp" type="button">Unlock (session)</button>` +
+        `<button class="gs-btn gs-btn-ghost" data-act="unlock-perm" type="button">Remove from list</button>`;
+    } else if (isAlreadyReported) {
+      const aiPressed = myVote === "ai" ? " gs-pressed" : "";
+      const cleanPressed = myVote === "clean" ? " gs-pressed" : "";
+      actionsHtml =
+        `<button class="gs-btn gs-btn-ghost${cleanPressed}" data-act="vote-clean" type="button">Looks legit</button>` +
+        `<button class="gs-btn gs-btn-primary${aiPressed}" data-act="vote-ai" type="button">Mark as AI</button>` +
+        `<button class="gs-btn gs-btn-danger" data-act="report" type="button">Report</button>`;
+    } else {
+      actionsHtml = `<button class="gs-btn gs-btn-primary gs-btn-wide" data-act="report" type="button">Queue for Review</button>`;
+    }
 
-        <div class="gs-panel-body">
-          ${blocked
-            ? `<div class="gs-p-warn">
-                 Play is disabled because this game is <b>${escapeHtml(STATUS_LABEL[status])}</b>.
-               </div>`
-            : (status === STATUS.NONE
-                ? `<div class="gs-p-text">This game has not been reviewed yet.</div>`
-                : `<div class="gs-p-text">Community feedback:
-                     <span class="gs-v-pill gs-v-ai">${votesAi} AI</span>
-                     <span class="gs-v-pill gs-v-clean">${votesClean} clean</span>
-                   </div>`)}
-        </div>
+    let bodyHtml;
+    if (blocked) {
+      bodyHtml = `<div class="gs-p-warn">Play is disabled because this game is <b>${escapeHtml(STATUS_LABEL[status])}</b>.</div>`;
+    } else if (status === STATUS.NONE) {
+      bodyHtml = `<div class="gs-p-text">This game has not been reviewed yet.</div>`;
+    } else {
+      bodyHtml =
+        `<div class="gs-p-text">Community feedback:` +
+        ` <span class="gs-v-pill gs-v-ai">${votesAi} AI</span>` +
+        ` <span class="gs-v-pill gs-v-clean">${votesClean} clean</span>` +
+        (myVote ? ` <span class="gs-v-pill gs-v-mine">your vote: ${escapeHtml(myVote)}</span>` : "") +
+        `</div>`;
+    }
 
-        <div class="gs-panel-actions">
-          ${blocked
-            ? `<button class="gs-btn gs-btn-ghost" data-act="unlock-temp" type="button">Unlock (session)</button>
-               <button class="gs-btn gs-btn-ghost" data-act="unlock-perm" type="button">Remove from list</button>`
-            : (isAlreadyReported
-                ? `<button class="gs-btn gs-btn-ghost" data-act="vote-clean" type="button">Looks legit</button>
-                   <button class="gs-btn gs-btn-primary" data-act="report" type="button">Report as AI</button>`
-                : `<button class="gs-btn gs-btn-primary gs-btn-wide" data-act="report" type="button">Queue for Review</button>`)}
-        </div>
-      </div>
-    `;
+    panel.innerHTML =
+      `<div class="gs-panel-card">` +
+        `<div class="gs-panel-head">` +
+          `<div class="gs-p-thumb">${thumbHtml}</div>` +
+          `<div class="gs-p-titles">` +
+            `<div class="gs-p-name" title="${escapeAttr(gameName)}">${escapeHtml(gameName || "(unknown)")}</div>` +
+            `<div class="gs-p-id">ID: ${escapeHtml(gameId)}</div>` +
+            `<div class="gs-badge ${statusBadgeClass(status)}">` +
+              `<span class="gs-dot ${statusDotClass(status)}"></span>` +
+              `${escapeHtml(STATUS_LABEL[status] || "Not Flagged")}` +
+            `</div>` +
+          `</div>` +
+          `<button class="gs-p-close" type="button" aria-label="Close">×</button>` +
+        `</div>` +
+        `<div class="gs-panel-body">${bodyHtml}</div>` +
+        `<div class="gs-panel-actions">${actionsHtml}</div>` +
+      `</div>`;
 
-    panel.querySelector(".gs-p-close").addEventListener("click", () => {
-      panel.classList.add("gs-hidden");
-    });
-
-    panel.addEventListener("click", async (e) => {
-      const b = e.target.closest("button[data-act]");
-      if (!b) return;
-      const act = b.dataset.act;
-      if (act === "report") {
-        openReportModal(gameId, gameName, thumb);
-      } else if (act === "vote-clean") {
-        await sendMsg({ action: "vote", gameId, vote: "clean", info: { name: gameName, thumb } });
-        await refreshState();
-        renderPanelIfOnDetail();
-        toast("Vote recorded", "ok");
-      } else if (act === "unlock-temp") {
-        await sendMsg({ action: "unlock", gameId, permanent: false });
-        await refreshState();
-        applyBlocksEverywhere();
-        renderPanelIfOnDetail();
-        toast("Unlocked for this session", "ok");
-      } else if (act === "unlock-perm") {
-        await sendMsg({ action: "unlock", gameId, permanent: true });
-        await refreshState();
-        applyBlocksEverywhere();
-        renderPanelIfOnDetail();
-        toast("Removed from blocklist", "ok");
-      }
-    }, { once: false });
+    bindPanelOnce(panel);
   }
 
   function lockPlayButtonIfNeeded() {
@@ -427,9 +490,11 @@
          <button type="button" data-act="unlock-perm">Remove from list</button>`
       : (status === STATUS.NONE
           ? `<button type="button" data-act="report">Queue for Review</button>
+             <button type="button" data-act="vote-ai">Mark as AI</button>
              <button type="button" data-act="block">Block locally</button>`
-          : `<button type="button" data-act="report">Report as AI</button>
+          : `<button type="button" data-act="vote-ai">Mark as AI</button>
              <button type="button" data-act="vote-clean">Looks legit</button>
+             <button type="button" data-act="report">Report</button>
              <button type="button" data-act="block">Block locally</button>`);
 
     menu.innerHTML = header + buttons + `<button type="button" data-act="close">Cancel</button>`;
@@ -458,11 +523,20 @@
       if (act === "close") return;
       if (act === "report") {
         openReportModal(gameId, gameName, thumb);
-      } else if (act === "vote-clean") {
-        await sendMsg({ action: "vote", gameId, vote: "clean", info: { name: gameName, thumb } });
-        await refreshState();
-        applyBlocksEverywhere();
-        toast("Vote recorded", "ok");
+      } else if (act === "vote-ai" || act === "vote-clean") {
+        const vote = act === "vote-ai" ? "ai" : "clean";
+        if (GS.myVotes[gameId] === vote) {
+          toast("You already voted this", "info");
+        } else {
+          const r = await sendMsg({ action: "vote", gameId, vote, info: { name: gameName, thumb } });
+          if (r && r.ok) {
+            await refreshState();
+            applyBlocksEverywhere();
+            toast(vote === "ai" ? "Marked as AI" : "Vote recorded", "ok");
+          } else {
+            toast("Vote failed", "err");
+          }
+        }
       } else if (act === "block") {
         await sendMsg({ action: "setStatus", gameId, status: STATUS.FLAGGED, info: { name: gameName, thumb, source: "manual" } });
         await refreshState();
@@ -598,15 +672,18 @@
     refreshState().then(() => scanAndInject());
   }
 
+  let storageDebounce = 0;
   try {
     ext.storage.onChanged && ext.storage.onChanged.addListener((changes, area) => {
       if (area !== "local") return;
-      if (changes.games || changes.enabled) {
+      if (!changes.games && !changes.enabled && !changes.myVotes) return;
+      clearTimeout(storageDebounce);
+      storageDebounce = setTimeout(() => {
         refreshState().then(() => {
           applyBlocksEverywhere();
           renderPanelIfOnDetail();
         });
-      }
+      }, 120);
     });
   } catch (e) { }
 

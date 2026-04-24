@@ -88,6 +88,7 @@ const STATE = {
 const DEFAULTS = {
   enabled: true,
   games: {},
+  myVotes: {},
   userSalt: null,
   reportsSent: 0,
   reportsAccepted: 0,
@@ -271,34 +272,62 @@ async function handleReport(msg) {
   return r;
 }
 
+const VOTE_LOCK = new Map();
+
 async function handleVote(gameId, vote, info) {
-  if (!gameId) return { ok: false };
-  const cur = await getStorage(["games", "totalVotes"]);
-  const g = cur.games || {};
-  const prev = g[String(gameId)] || {
-    id: String(gameId), name: (info && info.name) || "",
-    status: STATUS.NONE, unlocked: false, source: "vote",
-    addedAt: Date.now(), votesAi: 0, votesClean: 0,
-    thumb: (info && info.thumb) || ""
-  };
-  if (vote === "ai") prev.votesAi = (prev.votesAi || 0) + 1;
-  else if (vote === "clean") prev.votesClean = (prev.votesClean || 0) + 1;
-  prev.lastVoteAt = Date.now();
+  if (!gameId) return { ok: false, reason: "bad_input" };
+  if (vote !== "ai" && vote !== "clean") return { ok: false, reason: "bad_input" };
+  const id = String(gameId);
 
-  const ai = prev.votesAi || 0;
-  const cl = prev.votesClean || 0;
-  if (prev.status === STATUS.NONE || prev.status === STATUS.QUEUED) {
-    if (ai >= 1 && cl === 0) prev.status = STATUS.QUEUED;
-    if (ai >= 2 && cl === 0) prev.status = STATUS.FLAGGED;
-    if (ai >= 1 && cl >= 1) prev.status = STATUS.MIXED;
+  if (VOTE_LOCK.get(id)) return { ok: false, reason: "in_flight" };
+  VOTE_LOCK.set(id, true);
+  try {
+    const cur = await getStorage(["games", "myVotes", "totalVotes"]);
+    const g = cur.games || {};
+    const my = cur.myVotes || {};
+    const prevVote = my[id] || "";
+
+    if (prevVote === vote) {
+      return { ok: true, dup: true, game: g[id] || null };
+    }
+
+    const prev = g[id] || {
+      id, name: (info && info.name) || "",
+      status: STATUS.NONE, unlocked: false, source: "vote",
+      addedAt: Date.now(), votesAi: 0, votesClean: 0,
+      thumb: (info && info.thumb) || ""
+    };
+    if (info && info.name && !prev.name) prev.name = info.name;
+    if (info && info.thumb && !prev.thumb) prev.thumb = info.thumb;
+
+    if (prevVote === "ai") prev.votesAi = Math.max(0, (prev.votesAi || 0) - 1);
+    if (prevVote === "clean") prev.votesClean = Math.max(0, (prev.votesClean || 0) - 1);
+    if (vote === "ai") prev.votesAi = (prev.votesAi || 0) + 1;
+    if (vote === "clean") prev.votesClean = (prev.votesClean || 0) + 1;
+    prev.lastVoteAt = Date.now();
+
+    const ai = prev.votesAi || 0;
+    const cl = prev.votesClean || 0;
+    if (prev.status === STATUS.NONE || prev.status === STATUS.QUEUED || prev.status === STATUS.MIXED || prev.status === STATUS.FLAGGED) {
+      if (ai >= 1 && cl === 0) prev.status = STATUS.QUEUED;
+      if (ai >= 2 && cl === 0) prev.status = STATUS.FLAGGED;
+      if (ai >= 1 && cl >= 1) prev.status = STATUS.MIXED;
+      if (ai === 0 && cl >= 1) prev.status = STATUS.NONE;
+    }
+
+    g[id] = prev;
+    my[id] = vote;
+    const totalDelta = prevVote ? 0 : 1;
+
+    await setStorage({
+      games: g,
+      myVotes: my,
+      totalVotes: (cur.totalVotes || 0) + totalDelta
+    });
+    return { ok: true, game: prev };
+  } finally {
+    VOTE_LOCK.delete(id);
   }
-
-  g[String(gameId)] = prev;
-  await setStorage({
-    games: g,
-    totalVotes: (cur.totalVotes || 0) + 1
-  });
-  return { ok: true, game: prev };
 }
 
 async function handleSetStatus(gameId, status, info) {
@@ -331,12 +360,13 @@ async function handleUnlock(gameId, permanent) {
 
 async function handleGetState() {
   const cur = await getStorage([
-    "enabled", "games", "reportsSent", "reportsAccepted",
+    "enabled", "games", "myVotes", "reportsSent", "reportsAccepted",
     "reportsRejected", "totalVotes", "remoteSyncUrl"
   ]);
   return {
     enabled: cur.enabled !== false,
     games: cur.games || {},
+    myVotes: cur.myVotes || {},
     reportsSent: cur.reportsSent || 0,
     reportsAccepted: cur.reportsAccepted || 0,
     reportsRejected: cur.reportsRejected || 0,
@@ -392,6 +422,7 @@ async function syncRemote() {
 async function handleClearData() {
   await setStorage({
     games: {},
+    myVotes: {},
     reportsSent: 0,
     reportsAccepted: 0,
     reportsRejected: 0,

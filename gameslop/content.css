@@ -92,6 +92,7 @@
 }
 .gs-v-ai { background: rgba(224,69,69,.15); color: #f26e6e; }
 .gs-v-clean { background: rgba(76,207,116,.15); color: #6fe090; }
+.gs-v-mine { background: rgba(59,130,246,.15); color: #7ea8f7; }
 
 .gs-panel-actions {
   padding: 12px 14px;
@@ -151,7 +152,18 @@
   color: #fff;
 }
 .gs-btn-primary:hover { background: #3377ea; }
+.gs-btn-danger {
+  background: rgba(224,69,69,.15);
+  color: #f26e6e;
+  border: 1px solid rgba(224,69,69,.3);
+}
+.gs-btn-danger:hover { background: rgba(224,69,69,.22); }
 .gs-btn-wide { flex: 1; }
+.gs-btn:disabled { opacity: .5; cursor: not-allowed; }
+.gs-btn.gs-pressed {
+  outline: 2px solid #3b82f6;
+  outline-offset: -2px;
+}
 
 .gs-toast {
   position: fixed;
