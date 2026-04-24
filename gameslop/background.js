@@ -6,8 +6,16 @@ const WH_PARTS = [
   "Tg=="
 ];
 const WH_KEY = "gs_v1_proto_key_7b3a";
-
 const SIG_SECRET = "mFqz71Pw_xE2s_vkR9a_TnA";
+
+const STATUS = {
+  NONE: "none",
+  QUEUED: "queued",
+  FLAGGED: "flagged",
+  MIXED: "mixed",
+  CONFIRMED: "confirmed",
+  BANNED: "banned"
+};
 
 const STATE = {
   lastSyncAt: 0,
@@ -17,11 +25,15 @@ const STATE = {
 
 const DEFAULTS = {
   enabled: true,
-  blocklist: {},
+  games: {},
   userSalt: null,
   reportsSent: 0,
-  lastSeenVersion: "1.0.0",
-  remoteSyncUrl: ""
+  reportsAccepted: 0,
+  reportsRejected: 0,
+  totalVotes: 0,
+  lastSeenVersion: "1.1.0",
+  remoteSyncUrl: "",
+  webhookBlob: ""
 };
 
 function xorDecode(b64, key) {
@@ -32,9 +44,15 @@ function xorDecode(b64, key) {
       out += String.fromCharCode(raw.charCodeAt(i) ^ key.charCodeAt(i % key.length));
     }
     return out;
-  } catch (e) {
-    return "";
+  } catch (e) { return ""; }
+}
+
+function xorEncode(text, key) {
+  let raw = "";
+  for (let i = 0; i < text.length; i++) {
+    raw += String.fromCharCode(text.charCodeAt(i) ^ key.charCodeAt(i % key.length));
   }
+  try { return btoa(raw); } catch (e) { return ""; }
 }
 
 function getWebhookFromParts() {
@@ -44,6 +62,24 @@ function getWebhookFromParts() {
   return s;
 }
 
+function getStorage(keys) {
+  return new Promise((resolve) => {
+    try {
+      const res = api.storage.local.get(keys, (items) => resolve(items || {}));
+      if (res && typeof res.then === "function") res.then(resolve).catch(() => resolve({}));
+    } catch (e) { resolve({}); }
+  });
+}
+
+function setStorage(obj) {
+  return new Promise((resolve) => {
+    try {
+      const res = api.storage.local.set(obj, () => resolve());
+      if (res && typeof res.then === "function") res.then(() => resolve()).catch(() => resolve());
+    } catch (e) { resolve(); }
+  });
+}
+
 async function getWebhookUrl() {
   const { webhookBlob, userSalt } = await getStorage(["webhookBlob", "userSalt"]);
   if (webhookBlob && userSalt) {
@@ -51,14 +87,6 @@ async function getWebhookUrl() {
     if (/^https?:\/\//.test(dec)) return dec;
   }
   return getWebhookFromParts();
-}
-
-function xorEncode(text, key) {
-  let raw = "";
-  for (let i = 0; i < text.length; i++) {
-    raw += String.fromCharCode(text.charCodeAt(i) ^ key.charCodeAt(i % key.length));
-  }
-  try { return btoa(raw); } catch (e) { return ""; }
 }
 
 async function setWebhookUrl(url) {
@@ -84,24 +112,6 @@ async function hmacLike(payload) {
   return (await sha256Hex(SIG_SECRET + "|" + payload + "|" + SIG_SECRET)).slice(0, 24);
 }
 
-function getStorage(keys) {
-  return new Promise((resolve) => {
-    try {
-      const res = api.storage.local.get(keys, (items) => resolve(items || {}));
-      if (res && typeof res.then === "function") res.then(resolve).catch(() => resolve({}));
-    } catch (e) { resolve({}); }
-  });
-}
-
-function setStorage(obj) {
-  return new Promise((resolve) => {
-    try {
-      const res = api.storage.local.set(obj, () => resolve());
-      if (res && typeof res.then === "function") res.then(() => resolve()).catch(() => resolve());
-    } catch (e) { resolve(); }
-  });
-}
-
 async function ensureDefaults() {
   const cur = await getStorage(Object.keys(DEFAULTS));
   const patch = {};
@@ -112,6 +122,23 @@ async function ensureDefaults() {
     const arr = new Uint8Array(16);
     crypto.getRandomValues(arr);
     patch.userSalt = [...arr].map(b => b.toString(16).padStart(2, "0")).join("");
+  }
+  if (cur.blocklist && !cur.games) {
+    const migrated = {};
+    for (const [id, it] of Object.entries(cur.blocklist)) {
+      migrated[id] = {
+        id,
+        name: it.name || "",
+        status: it.unlocked ? STATUS.MIXED : STATUS.FLAGGED,
+        unlocked: !!it.unlocked,
+        source: it.source || "manual",
+        addedAt: it.addedAt || Date.now(),
+        votesAi: 0,
+        votesClean: 0,
+        thumb: ""
+      };
+    }
+    patch.games = migrated;
   }
   if (Object.keys(patch).length) await setStorage(patch);
 }
@@ -135,6 +162,28 @@ function dedupeCheck(gameId) {
   return true;
 }
 
+async function upsertGame(id, patch) {
+  if (!id) return null;
+  id = String(id);
+  const { games } = await getStorage(["games"]);
+  const g = games || {};
+  const prev = g[id] || {
+    id,
+    name: "",
+    status: STATUS.NONE,
+    unlocked: false,
+    source: "",
+    addedAt: Date.now(),
+    votesAi: 0,
+    votesClean: 0,
+    thumb: ""
+  };
+  const next = { ...prev, ...patch, id };
+  g[id] = next;
+  await setStorage({ games: g });
+  return next;
+}
+
 async function postReport(report) {
   const url = await getWebhookUrl();
   if (!url) return { ok: false, reason: "no_webhook" };
@@ -149,7 +198,7 @@ async function postReport(report) {
     game_url: String(report.gameUrl || "").slice(0, 500),
     reason: String(report.reason || "").slice(0, 280),
     reporter_hash: userHash,
-    ext_version: "1.0.0",
+    ext_version: "1.1.0",
     ts: Date.now()
   };
 
@@ -160,7 +209,11 @@ async function postReport(report) {
     username: "GameSlop",
     embeds: [{
       title: "Nuova segnalazione AI",
-      description: "Gioco: **" + body.game_name + "**\nID: `" + body.game_id + "`\nURL: " + body.game_url + "\nMotivo: " + (body.reason || "(nessuno)"),
+      description:
+        "Gioco: **" + body.game_name + "**\n" +
+        "ID: `" + body.game_id + "`\n" +
+        "URL: " + body.game_url + "\n" +
+        "Motivo: " + (body.reason || "(nessuno)"),
       color: 15548997,
       fields: [
         { name: "Reporter", value: "`" + body.reporter_hash + "`", inline: true },
@@ -201,40 +254,100 @@ async function handleReport(msg) {
   STATE.reportHistory.push(Date.now());
 
   const r = await postReport(msg);
+  if (r.ok) {
+    await upsertGame(msg.gameId, {
+      name: msg.gameName || "",
+      status: STATUS.QUEUED,
+      source: "user_report",
+      thumb: msg.thumb || "",
+      unlocked: false,
+      lastReportedAt: Date.now()
+    });
+    const { totalVotes } = await getStorage(["totalVotes"]);
+    await setStorage({ totalVotes: (totalVotes || 0) + 1 });
+  }
   return r;
 }
 
-async function handleGetBlocklist() {
-  const { blocklist, enabled } = await getStorage(["blocklist", "enabled"]);
-  return { enabled: enabled !== false, blocklist: blocklist || {} };
+async function handleVote(gameId, vote, info) {
+  if (!gameId) return { ok: false };
+  const cur = await getStorage(["games", "totalVotes"]);
+  const g = cur.games || {};
+  const prev = g[String(gameId)] || {
+    id: String(gameId),
+    name: (info && info.name) || "",
+    status: STATUS.NONE,
+    unlocked: false,
+    source: "vote",
+    addedAt: Date.now(),
+    votesAi: 0,
+    votesClean: 0,
+    thumb: (info && info.thumb) || ""
+  };
+  if (vote === "ai") prev.votesAi = (prev.votesAi || 0) + 1;
+  else if (vote === "clean") prev.votesClean = (prev.votesClean || 0) + 1;
+  prev.lastVoteAt = Date.now();
+
+  const ai = prev.votesAi || 0;
+  const cl = prev.votesClean || 0;
+  if (prev.status === STATUS.NONE || prev.status === STATUS.QUEUED) {
+    if (ai >= 1 && cl === 0) prev.status = STATUS.QUEUED;
+    if (ai >= 2 && cl === 0) prev.status = STATUS.FLAGGED;
+    if (ai >= 1 && cl >= 1) prev.status = STATUS.MIXED;
+  }
+
+  g[String(gameId)] = prev;
+  await setStorage({
+    games: g,
+    totalVotes: (cur.totalVotes || 0) + 1
+  });
+  return { ok: true, game: prev };
 }
 
-async function handleSetBlocked(gameId, info) {
+async function handleSetStatus(gameId, status, info) {
   if (!gameId) return { ok: false };
-  const { blocklist } = await getStorage(["blocklist"]);
-  const bl = blocklist || {};
-  bl[String(gameId)] = {
-    name: info && info.name ? String(info.name).slice(0, 140) : "",
-    addedAt: Date.now(),
-    source: info && info.source ? info.source : "manual",
-    unlocked: false
+  const patch = {
+    status: status,
+    source: (info && info.source) || "manual"
   };
-  await setStorage({ blocklist: bl });
-  return { ok: true };
+  if (info && info.name) patch.name = info.name;
+  if (info && info.thumb) patch.thumb = info.thumb;
+  if (status === STATUS.CONFIRMED || status === STATUS.BANNED || status === STATUS.FLAGGED) {
+    patch.unlocked = false;
+  }
+  const g = await upsertGame(gameId, patch);
+  return { ok: true, game: g };
 }
 
 async function handleUnlock(gameId, permanent) {
-  const { blocklist } = await getStorage(["blocklist"]);
-  const bl = blocklist || {};
-  if (!bl[String(gameId)]) return { ok: true };
+  const { games } = await getStorage(["games"]);
+  const g = games || {};
+  if (!g[String(gameId)]) return { ok: true };
   if (permanent) {
-    delete bl[String(gameId)];
+    delete g[String(gameId)];
   } else {
-    bl[String(gameId)].unlocked = true;
-    bl[String(gameId)].unlockedAt = Date.now();
+    g[String(gameId)].unlocked = true;
+    g[String(gameId)].unlockedAt = Date.now();
   }
-  await setStorage({ blocklist: bl });
+  await setStorage({ games: g });
   return { ok: true };
+}
+
+async function handleGetState() {
+  const cur = await getStorage([
+    "enabled", "games", "reportsSent", "reportsAccepted",
+    "reportsRejected", "totalVotes", "remoteSyncUrl"
+  ]);
+  return {
+    enabled: cur.enabled !== false,
+    games: cur.games || {},
+    reportsSent: cur.reportsSent || 0,
+    reportsAccepted: cur.reportsAccepted || 0,
+    reportsRejected: cur.reportsRejected || 0,
+    totalVotes: cur.totalVotes || 0,
+    remoteSyncUrl: cur.remoteSyncUrl || "",
+    lastSyncAt: STATE.lastSyncAt
+  };
 }
 
 async function syncRemote() {
@@ -245,33 +358,57 @@ async function syncRemote() {
     if (!r.ok) return;
     const data = await r.json();
     if (data && Array.isArray(data.games)) {
-      const { blocklist } = await getStorage(["blocklist"]);
-      const bl = blocklist || {};
+      const { games } = await getStorage(["games"]);
+      const g = games || {};
       let added = 0;
-      for (const g of data.games) {
-        const id = String(g.id || g.gameId || "");
+      let accepted = 0;
+      let rejected = 0;
+      for (const it of data.games) {
+        const id = String(it.id || it.gameId || "");
         if (!id) continue;
-        if (!bl[id]) {
-          bl[id] = {
-            name: String(g.name || "").slice(0, 140),
-            addedAt: Date.now(),
-            source: "remote",
-            unlocked: false
-          };
-          added++;
-        }
+        const prevStatus = g[id] && g[id].status;
+        const status = (it.status || STATUS.CONFIRMED).toLowerCase();
+        const wasQueued = prevStatus === STATUS.QUEUED || prevStatus === STATUS.FLAGGED;
+        g[id] = {
+          id,
+          name: String(it.name || (g[id] && g[id].name) || "").slice(0, 140),
+          status: Object.values(STATUS).includes(status) ? status : STATUS.CONFIRMED,
+          unlocked: g[id] ? !!g[id].unlocked : false,
+          source: "remote",
+          addedAt: (g[id] && g[id].addedAt) || Date.now(),
+          votesAi: (g[id] && g[id].votesAi) || 0,
+          votesClean: (g[id] && g[id].votesClean) || 0,
+          thumb: (it.thumb || (g[id] && g[id].thumb) || "")
+        };
+        if (!prevStatus) added++;
+        if (wasQueued && (status === STATUS.CONFIRMED || status === STATUS.BANNED)) accepted++;
+        if (wasQueued && status === "clean") rejected++;
       }
-      if (added > 0) await setStorage({ blocklist: bl });
+      const cur = await getStorage(["reportsAccepted", "reportsRejected"]);
+      await setStorage({
+        games: g,
+        reportsAccepted: (cur.reportsAccepted || 0) + accepted,
+        reportsRejected: (cur.reportsRejected || 0) + rejected
+      });
       STATE.lastSyncAt = Date.now();
     }
   } catch (e) { }
 }
 
+async function handleClearData() {
+  await setStorage({
+    games: {},
+    reportsSent: 0,
+    reportsAccepted: 0,
+    reportsRejected: 0,
+    totalVotes: 0
+  });
+  return { ok: true };
+}
+
 api.runtime.onInstalled.addListener(async () => {
   await ensureDefaults();
-  try {
-    api.alarms.create("gs_sync", { periodInMinutes: 60 });
-  } catch (e) { }
+  try { api.alarms.create("gs_sync", { periodInMinutes: 60 }); } catch (e) { }
 });
 
 api.runtime.onStartup && api.runtime.onStartup.addListener(async () => {
@@ -289,33 +426,18 @@ api.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     try {
       if (!msg || !msg.action) return sendResponse({ ok: false, reason: "bad_msg" });
 
-      if (msg.action === "report") {
-        const r = await handleReport(msg);
-        return sendResponse(r);
-      }
-      if (msg.action === "getState") {
-        const s = await handleGetBlocklist();
-        const { reportsSent } = await getStorage(["reportsSent"]);
-        return sendResponse({ ...s, reportsSent: reportsSent || 0 });
-      }
-      if (msg.action === "setBlocked") {
-        const r = await handleSetBlocked(msg.gameId, msg.info || {});
-        return sendResponse(r);
-      }
-      if (msg.action === "unlock") {
-        const r = await handleUnlock(msg.gameId, !!msg.permanent);
-        return sendResponse(r);
-      }
+      if (msg.action === "getState") return sendResponse(await handleGetState());
+      if (msg.action === "report") return sendResponse(await handleReport(msg));
+      if (msg.action === "vote") return sendResponse(await handleVote(msg.gameId, msg.vote, msg.info));
+      if (msg.action === "setStatus") return sendResponse(await handleSetStatus(msg.gameId, msg.status, msg.info));
+      if (msg.action === "unlock") return sendResponse(await handleUnlock(msg.gameId, !!msg.permanent));
       if (msg.action === "toggleEnabled") {
         const { enabled } = await getStorage(["enabled"]);
         const next = !(enabled !== false);
         await setStorage({ enabled: next });
         return sendResponse({ ok: true, enabled: next });
       }
-      if (msg.action === "setWebhook") {
-        const r = await setWebhookUrl(String(msg.url || ""));
-        return sendResponse(r);
-      }
+      if (msg.action === "setWebhook") return sendResponse(await setWebhookUrl(String(msg.url || "")));
       if (msg.action === "hasWebhook") {
         const u = await getWebhookUrl();
         return sendResponse({ ok: true, hasWebhook: !!u });
@@ -329,6 +451,8 @@ api.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         await syncRemote();
         return sendResponse({ ok: true, lastSyncAt: STATE.lastSyncAt });
       }
+      if (msg.action === "clearData") return sendResponse(await handleClearData());
+
       sendResponse({ ok: false, reason: "unknown_action" });
     } catch (e) {
       sendResponse({ ok: false, reason: "exception" });

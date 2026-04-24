@@ -1,54 +1,63 @@
 # GameSlop
 
-Estensione cross-browser (Chrome + Firefox, Manifest V3) che blocca giochi Roblox flaggati come generati da AI e permette agli utenti di segnalarli a un webhook admin.
+Cross-browser extension (Chrome + Firefox, Manifest V3) that flags AI-generated Roblox games and lets users report them to an admin webhook for review.
 
-## Funzionalità
+## Features
 
-- Pulsante "Segnala come AI" sulla pagina dettaglio gioco (`/games/{id}`)
-- Menu 3 puntini su ogni card in home/categorie/profili per segnalare o sbloccare
-- Giochi bloccati: play disabilitato, card oscurata, link neutralizzato
-- Sblocco temporaneo (solo sessione) o definitivo dal menu o dal popup
-- Popup con stats, lista bloccati, ricerca, toggle on/off
-- Webhook configurabile dal popup (salvato offuscato con salt random per utente)
-- Sync opzionale di una blocklist remota (JSON con `{ "games": [{ "id", "name" }] }`)
-- Rate limit (max 5 report / minuto, min 3s tra un report e l'altro)
-- Dedup 6 ore per stesso `gameId`
-- Firma pseudo-HMAC (SHA-256 con secret interno) sul payload per filtrare richieste non provenienti dall'estensione lato webhook/bot admin
+- **Floating panel** on every game page (`/games/{id}`) with avatar, name, ID and a colored status badge (`Not Flagged`, `Under Review`, `Flagged`, `Mixed`, `Confirmed AI`, `Banned`). One-click "Queue for Review" or "Looks legit" vote.
+- **3-dots menu** on every game card (home, categories, search, profile) to report / vote / block / unlock without leaving the page.
+- **Blocked games**: Play button disabled, card overlay with "Confirmed AI" / "Banned" label, anchor click intercepted.
+- **Popup with 3 tabs** in the style of a security indicator:
+  - **Stats** — Games (Flagged / Confirmed / Mixed / Banned), Reports (Sent / Accepted / Pending / Rejected), Community (Total Votes / Queued Games).
+  - **Queue** — filterable list of games per status with open / unlock / remove actions.
+  - **Settings** — enable toggle, webhook (password input), remote blocklist sync, clear data.
+- **Admin workflow**: reports posted to a Discord-compatible webhook with a structured `gs_payload` and signature. Admin decisions propagate back via the remote blocklist endpoint (`{ games: [{ id, name, status }] }`).
+- **Rate limit** (5 reports / minute, 3s min gap) + **dedup** (6h) + **pseudo-HMAC** signature on each report (`X-GS-Sig` header).
 
-## Installazione
+## Status model
+
+| Status       | Blocks play | Source                       |
+|--------------|-------------|------------------------------|
+| `none`       | no          | default                      |
+| `queued`     | no          | user report / pending review |
+| `flagged`    | **yes**     | 2+ AI votes, no clean        |
+| `mixed`      | no          | votes on both sides          |
+| `confirmed`  | **yes**     | admin approved               |
+| `banned`     | **yes**     | admin banned                 |
+
+## Install
 
 ### Chrome / Edge / Brave
-1. Vai su `chrome://extensions`
-2. Attiva "Modalità sviluppatore"
-3. "Carica estensione non pacchettizzata" → seleziona la cartella `gameslop/`
+1. `chrome://extensions` → enable Developer mode
+2. "Load unpacked" → select the `gameslop/` folder
 
 ### Firefox
-1. Vai su `about:debugging#/runtime/this-firefox`
-2. "Carica componente aggiuntivo temporaneo..." → seleziona `gameslop/manifest.json`
+1. `about:debugging#/runtime/this-firefox`
+2. "Load Temporary Add-on" → select `gameslop/manifest.json`
 
-## Configurazione webhook (admin)
+## Admin setup
 
-Apri il popup dell'estensione e incolla l'URL webhook Discord (o qualunque endpoint HTTPS che riceva POST JSON) nel campo "Webhook segnalazioni". Il payload viene inviato in formato Discord-compatibile + oggetto `gs_payload` strutturato:
+Open the extension popup → **Settings** → paste your Discord webhook (or any HTTPS endpoint that accepts POST JSON) → Save. Optional: paste a remote sync URL returning a JSON of curated confirmed/banned games.
 
+Report payload (`gs_payload` inside the Discord-style body, also in `X-GS-Sig`):
 ```json
 {
   "type": "ai_game_report",
   "game_id": "123",
   "game_name": "...",
   "game_url": "https://www.roblox.com/games/123",
-  "reason": "thumbnail AI...",
+  "reason": "AI thumbnail...",
   "reporter_hash": "abc123...",
-  "ext_version": "1.0.0",
+  "ext_version": "1.1.0",
   "ts": 1713900000000,
   "sig": "..."
 }
 ```
 
-L'header `X-GS-Sig` replica la firma. Il bot admin accetta/rifiuta la segnalazione e può distribuire la blocklist aggregata via l'endpoint di sync remoto configurabile nel popup.
+## Anti-leak notes
 
-## Note sicurezza
-
-- Nessun webhook in chiaro nel codice: le parti offuscate sono rumore XOR-random (senza chiave utente non decodificano URL validi)
-- Il webhook reale viene salvato lato client offuscato con XOR+salt utente di 16 byte random
-- Firma HMAC-like sui report (non previene spoofing totale, ma basta per filtrare noise da scrape del webhook)
-- Nessuna credenziale Roblox letta/toccata, nessun cookie inviato (fetch `credentials: "omit"`)
+- No real webhook hardcoded in the source. The XOR-obfuscated parts decode to random noise (no valid URL).
+- Admin-configured webhook is stored in `chrome.storage.local` XOR-encoded with a per-install random 16-byte salt.
+- Pseudo-HMAC (SHA-256 with internal secret) on each report so the admin bot can filter random noise if someone scrapes the webhook URL.
+- Fetches use `credentials: "omit"` and `referrerPolicy: "no-referrer"` — no Roblox cookies leak to the webhook.
+- Minimal permissions (`storage`, `alarms`, host on `*.roblox.com`).
