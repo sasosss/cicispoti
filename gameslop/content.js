@@ -181,7 +181,7 @@
         let why = (r && r.reason) || "error";
         if (why === "rate_limit") why = "too many reports, try again soon";
         else if (why === "duplicate") why = "already reported recently";
-        else if (why === "no_webhook") why = "webhook not configured";
+        else why = "network error";
         toast("Report failed: " + why, "err");
         btn.disabled = false;
         btn.textContent = "Queue for Review";
