@@ -37,3 +37,12 @@ Prebuilt archives live in [`dist/`](../dist) (run `./scripts/build.sh` to regene
 2. "Load Temporary Add-on…" → select `dist/gameslop-1.1.0.xpi`
 
 Reports are sent automatically on submission. No setup required.
+
+## Admin review flow
+
+When a user reports a game, the extension posts a Discord poll to the configured channel asking admins to vote:
+- 🚫 **Confirm flag** → game becomes `confirmed`
+- ✅ **Reject** → game treated as `clean`
+- 🔨 **Ban** → game becomes `banned`
+
+The remote sync URL (Settings tab) lets the curated outcome propagate back to all installs: when a `queued` game flips to `confirmed`/`banned` via sync, the local copy is updated and the play button is blocked.

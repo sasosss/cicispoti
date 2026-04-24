@@ -208,34 +208,33 @@ async function postReport(report) {
   };
   body.sig = await hmacLike(JSON.stringify(body));
 
-  const discordLike = {
+  const summary =
+    "**Nuova segnalazione AI** — " + body.game_name + "\n" +
+    "ID: `" + body.game_id + "` · " + body.game_url + "\n" +
+    "Motivo: " + (body.reason || "_(nessuno)_") + "\n" +
+    "Reporter: `" + body.reporter_hash + "` · sig `" + body.sig + "` · v" + body.ext_version;
+
+  const pollPayload = {
     username: "GameSlop",
-    embeds: [{
-      title: "Nuova segnalazione AI",
-      description:
-        "Gioco: **" + body.game_name + "**\n" +
-        "ID: `" + body.game_id + "`\n" +
-        "URL: " + body.game_url + "\n" +
-        "Motivo: " + (body.reason || "(nessuno)"),
-      color: 15548997,
-      fields: [
-        { name: "Reporter", value: "`" + body.reporter_hash + "`", inline: true },
-        { name: "Sig", value: "`" + body.sig + "`", inline: true },
-        { name: "Versione", value: body.ext_version, inline: true }
+    content: summary,
+    poll: {
+      question: { text: "Confermare flag AI per \"" + body.game_name.slice(0, 80) + "\"?" },
+      answers: [
+        { poll_media: { text: "Conferma (flag AI)", emoji: { name: "🚫" } } },
+        { poll_media: { text: "Rifiuta (gioco pulito)", emoji: { name: "✅" } } },
+        { poll_media: { text: "Ban (più severo)", emoji: { name: "🔨" } } }
       ],
-      timestamp: new Date(body.ts).toISOString()
-    }],
+      duration: 24,
+      allow_multiselect: false
+    },
     gs_payload: body
   };
 
   try {
     const res = await fetch(url, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-GS-Sig": body.sig
-      },
-      body: JSON.stringify(discordLike),
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(pollPayload),
       credentials: "omit",
       referrerPolicy: "no-referrer",
       mode: "cors"
