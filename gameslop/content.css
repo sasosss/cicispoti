@@ -158,11 +158,74 @@
   border: 1px solid rgba(224,69,69,.3);
 }
 .gs-btn-danger:hover { background: rgba(224,69,69,.22); }
+.gs-btn-danger-solid {
+  background: #dc2626;
+  color: #fff;
+  border: none;
+}
+.gs-btn-danger-solid:hover { background: #b91c1c; }
 .gs-btn-wide { flex: 1; }
 .gs-btn:disabled { opacity: .5; cursor: not-allowed; }
 .gs-btn.gs-pressed {
-  outline: 2px solid #3b82f6;
+  outline: 2px solid #a855f7;
   outline-offset: -2px;
+}
+
+.gs-seg {
+  margin: 12px 0 4px;
+}
+.gs-seg-lbl {
+  font-size: 11px;
+  letter-spacing: .6px;
+  text-transform: uppercase;
+  color: #8a8f99;
+  margin-bottom: 6px;
+  font-weight: 600;
+}
+.gs-seg-opts {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.gs-seg-opt {
+  flex: 1;
+  min-width: 100px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  background: #11141c;
+  border: 1px solid #2a2f3d;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 12px;
+  color: #c9ccd2;
+  transition: all .15s;
+}
+.gs-seg-opt:hover:not(.gs-seg-disabled) {
+  background: #1a1d26;
+  border-color: #3d4252;
+}
+.gs-seg-opt input[type=radio] {
+  accent-color: #a855f7;
+  margin: 0;
+}
+.gs-seg-opt:has(input:checked) {
+  background: rgba(168,85,247,.12);
+  border-color: rgba(168,85,247,.5);
+  color: #fff;
+}
+.gs-seg-disabled { opacity: .35; cursor: not-allowed; }
+.gs-seg-opt span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gs-modal-confirm .gs-confirm-body {
+  font-size: 13px;
+  color: #c9ccd2;
+  line-height: 1.5;
 }
 
 .gs-toast {
