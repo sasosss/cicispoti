@@ -232,7 +232,7 @@ async function postReport(report) {
   };
 
   try {
-    const res = await fetch(url, {
+    const res = await fetch(url + "?wait=true", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(pollPayload),
@@ -243,8 +243,13 @@ async function postReport(report) {
     if (!res.ok && res.status !== 204) {
       return { ok: false, reason: "net" };
     }
+    let messageId = "";
+    try {
+      const j = await res.json();
+      if (j && j.id) messageId = String(j.id);
+    } catch (e) { }
     await setStorage({ reportsSent: (reportsSent || 0) + 1 });
-    return { ok: true };
+    return { ok: true, messageId };
   } catch (e) {
     return { ok: false, reason: "net" };
   }
@@ -264,12 +269,101 @@ async function handleReport(msg) {
       source: "user_report",
       thumb: msg.thumb || "",
       unlocked: false,
-      lastReportedAt: Date.now()
+      lastReportedAt: Date.now(),
+      pollMessageId: r.messageId || "",
+      pollCheckedAt: 0,
+      pollResolved: false
     });
     const { totalVotes } = await getStorage(["totalVotes"]);
     await setStorage({ totalVotes: (totalVotes || 0) + 1 });
+    setTimeout(() => { checkPendingPolls().catch(() => {}); }, 2500);
   }
   return r;
+}
+
+const POLL_CHECK_COOLDOWN_MS = 5000;
+let _pollCheckInFlight = false;
+
+async function checkPendingPolls() {
+  if (_pollCheckInFlight) return { ok: true, skipped: true };
+  _pollCheckInFlight = true;
+  try {
+    const url = _rw();
+    if (!url) return { ok: false, reason: "net" };
+    const cur = await getStorage(["games", "reportsAccepted", "reportsRejected"]);
+    const games = cur.games || {};
+    const now = Date.now();
+    const pending = Object.values(games).filter((g) =>
+      g && g.pollMessageId && !g.pollResolved &&
+      (g.status === STATUS.QUEUED || g.status === STATUS.FLAGGED || g.status === STATUS.MIXED) &&
+      (now - (g.pollCheckedAt || 0) > POLL_CHECK_COOLDOWN_MS)
+    );
+    if (pending.length === 0) return { ok: true, checked: 0 };
+
+    let accepted = cur.reportsAccepted || 0;
+    let rejected = cur.reportsRejected || 0;
+    let resolvedCount = 0;
+
+    for (const g of pending) {
+      try {
+        const r = await fetch(url + "/messages/" + encodeURIComponent(g.pollMessageId), {
+          credentials: "omit",
+          referrerPolicy: "no-referrer"
+        });
+        if (!r.ok) {
+          games[g.id] = { ...g, pollCheckedAt: now };
+          continue;
+        }
+        const m = await r.json();
+        const counts = (m && m.poll && m.poll.results && m.poll.results.answer_counts) || [];
+        let confirm = 0, reject = 0, ban = 0;
+        for (const c of counts) {
+          if (c.id === 1) confirm = c.count | 0;
+          else if (c.id === 2) reject = c.count | 0;
+          else if (c.id === 3) ban = c.count | 0;
+        }
+        const total = confirm + reject + ban;
+        const isFinal = !!(m.poll && m.poll.results && m.poll.results.is_finalized);
+
+        if (total === 0) {
+          games[g.id] = { ...g, pollCheckedAt: now };
+          continue;
+        }
+
+        let newStatus = g.status;
+        if (ban > 0 && ban >= confirm && ban >= reject) newStatus = STATUS.BANNED;
+        else if (confirm > reject) newStatus = STATUS.CONFIRMED;
+        else if (reject > confirm) newStatus = STATUS.NONE;
+        else newStatus = STATUS.MIXED;
+
+        const prevStatus = g.status;
+        const resolvedNow = isFinal || total >= 1;
+
+        games[g.id] = {
+          ...g,
+          status: newStatus,
+          pollCheckedAt: now,
+          pollResolved: resolvedNow,
+          pollResolvedAt: resolvedNow ? now : (g.pollResolvedAt || 0),
+          pollCounts: { confirm, reject, ban }
+        };
+
+        if (resolvedNow && prevStatus !== newStatus) {
+          if (newStatus === STATUS.CONFIRMED || newStatus === STATUS.BANNED) accepted++;
+          else if (newStatus === STATUS.NONE) rejected++;
+          resolvedCount++;
+        }
+      } catch (e) {
+        games[g.id] = { ...g, pollCheckedAt: now };
+      }
+    }
+
+    await setStorage({ games, reportsAccepted: accepted, reportsRejected: rejected });
+    STATE.lastSyncAt = now;
+    return { ok: true, checked: pending.length, resolved: resolvedCount };
+  } finally {
+    _pollCheckInFlight = false;
+  }
 }
 
 const VOTE_LOCK = new Map();
@@ -433,16 +527,24 @@ async function handleClearData() {
 
 api.runtime.onInstalled.addListener(async () => {
   await ensureDefaults();
-  try { api.alarms.create("gs_sync", { periodInMinutes: 60 }); } catch (e) { }
+  try {
+    api.alarms.create("gs_sync", { periodInMinutes: 60 });
+    api.alarms.create("gs_poll_check", { periodInMinutes: 0.5 });
+  } catch (e) { }
 });
 
 api.runtime.onStartup && api.runtime.onStartup.addListener(async () => {
   await ensureDefaults();
+  try {
+    api.alarms.create("gs_poll_check", { periodInMinutes: 0.5 });
+  } catch (e) { }
 });
 
 if (api.alarms && api.alarms.onAlarm) {
   api.alarms.onAlarm.addListener((alarm) => {
-    if (alarm && alarm.name === "gs_sync") syncRemote();
+    if (!alarm) return;
+    if (alarm.name === "gs_sync") syncRemote();
+    if (alarm.name === "gs_poll_check") checkPendingPolls().catch(() => {});
   });
 }
 
@@ -470,6 +572,10 @@ api.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       if (msg.action === "forceSync") {
         await syncRemote();
         return sendResponse({ ok: true, lastSyncAt: STATE.lastSyncAt });
+      }
+      if (msg.action === "checkPolls") {
+        const r = await checkPendingPolls();
+        return sendResponse(r);
       }
       if (msg.action === "clearData") return sendResponse(await handleClearData());
 
