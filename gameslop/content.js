@@ -53,6 +53,49 @@
     }
   }
 
+  function applyVoteLocally(gameId, vote, info) {
+    const id = String(gameId);
+    const prevVote = GS.myVotes[id] || "";
+    if (prevVote === vote) return false;
+
+    const prev = GS.games[id] || {
+      id, name: (info && info.name) || "",
+      status: STATUS.NONE, unlocked: false, source: "vote",
+      addedAt: Date.now(), votesAi: 0, votesClean: 0,
+      thumb: (info && info.thumb) || ""
+    };
+    const next = { ...prev };
+    if (info && info.name && !next.name) next.name = info.name;
+    if (info && info.thumb && !next.thumb) next.thumb = info.thumb;
+
+    if (prevVote === "ai") next.votesAi = Math.max(0, (next.votesAi || 0) - 1);
+    if (prevVote === "clean") next.votesClean = Math.max(0, (next.votesClean || 0) - 1);
+    if (vote === "ai") next.votesAi = (next.votesAi || 0) + 1;
+    if (vote === "clean") next.votesClean = (next.votesClean || 0) + 1;
+    next.lastVoteAt = Date.now();
+
+    const ai = next.votesAi || 0;
+    const cl = next.votesClean || 0;
+    if (next.status === STATUS.NONE || next.status === STATUS.QUEUED || next.status === STATUS.MIXED || next.status === STATUS.FLAGGED) {
+      if (ai >= 1 && cl === 0) next.status = STATUS.QUEUED;
+      if (ai >= 2 && cl === 0) next.status = STATUS.FLAGGED;
+      if (ai >= 1 && cl >= 1) next.status = STATUS.MIXED;
+      if (ai === 0 && cl >= 1) next.status = STATUS.NONE;
+    }
+
+    GS.games[id] = next;
+    GS.myVotes[id] = vote;
+    return { prev, prevVote };
+  }
+
+  function rollbackVote(gameId, snapshot) {
+    if (!snapshot) return;
+    const id = String(gameId);
+    GS.games[id] = snapshot.prev;
+    if (snapshot.prevVote) GS.myVotes[id] = snapshot.prevVote;
+    else delete GS.myVotes[id];
+  }
+
   function extractGameIdFromHref(href) {
     if (!href) return null;
     const m = href.match(/\/games\/(\d+)/);
@@ -238,28 +281,39 @@
 
       const flightKey = act + ":" + gameId;
       if (GS.inFlight.has(flightKey)) return;
+
+      if (act === "vote-ai" || act === "vote-clean") {
+        const vote = act === "vote-ai" ? "ai" : "clean";
+        if (GS.myVotes[gameId] === vote) {
+          toast("You already voted this", "info");
+          return;
+        }
+        GS.inFlight.add(flightKey);
+        const snapshot = applyVoteLocally(gameId, vote, { name: gameName, thumb });
+        GS.panelLastSig = "";
+        renderPanelIfOnDetail();
+        applyBlocksEverywhere();
+        toast(vote === "ai" ? "Marked as AI" : "Vote recorded", "ok");
+
+        sendMsg({ action: "vote", gameId, vote, info: { name: gameName, thumb } }).then((r) => {
+          GS.inFlight.delete(flightKey);
+          if (!r || !r.ok) {
+            rollbackVote(gameId, snapshot);
+            GS.panelLastSig = "";
+            renderPanelIfOnDetail();
+            applyBlocksEverywhere();
+            toast("Vote failed, rolled back", "err");
+          }
+        });
+        return;
+      }
+
       GS.inFlight.add(flightKey);
       const allBtns = panel.querySelectorAll("button[data-act]");
       allBtns.forEach((x) => x.disabled = true);
-
       try {
         if (act === "report") {
           openReportModal(gameId, gameName, thumb);
-        } else if (act === "vote-ai" || act === "vote-clean") {
-          const vote = act === "vote-ai" ? "ai" : "clean";
-          if (GS.myVotes[gameId] === vote) {
-            toast("You already voted this", "info");
-          } else {
-            const r = await sendMsg({ action: "vote", gameId, vote, info: { name: gameName, thumb } });
-            if (r && r.ok) {
-              await refreshState();
-              applyBlocksEverywhere();
-              renderPanelIfOnDetail();
-              toast(vote === "ai" ? "Marked as AI" : "Vote recorded", "ok");
-            } else {
-              toast("Vote failed", "err");
-            }
-          }
         } else if (act === "unlock-temp") {
           await sendMsg({ action: "unlock", gameId, permanent: false });
           await refreshState();
@@ -528,14 +582,20 @@
         if (GS.myVotes[gameId] === vote) {
           toast("You already voted this", "info");
         } else {
-          const r = await sendMsg({ action: "vote", gameId, vote, info: { name: gameName, thumb } });
-          if (r && r.ok) {
-            await refreshState();
-            applyBlocksEverywhere();
-            toast(vote === "ai" ? "Marked as AI" : "Vote recorded", "ok");
-          } else {
-            toast("Vote failed", "err");
-          }
+          const snapshot = applyVoteLocally(gameId, vote, { name: gameName, thumb });
+          GS.panelLastSig = "";
+          applyBlocksEverywhere();
+          renderPanelIfOnDetail();
+          toast(vote === "ai" ? "Marked as AI" : "Vote recorded", "ok");
+          sendMsg({ action: "vote", gameId, vote, info: { name: gameName, thumb } }).then((r) => {
+            if (!r || !r.ok) {
+              rollbackVote(gameId, snapshot);
+              GS.panelLastSig = "";
+              applyBlocksEverywhere();
+              renderPanelIfOnDetail();
+              toast("Vote failed, rolled back", "err");
+            }
+          });
         }
       } else if (act === "block") {
         await sendMsg({ action: "setStatus", gameId, status: STATUS.FLAGGED, info: { name: gameName, thumb, source: "manual" } });
