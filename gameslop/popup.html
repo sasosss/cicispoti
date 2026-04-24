@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="UTF-8" />
+  <title>GameSlop</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="head">
+    <div class="logo">GameSlop</div>
+    <label class="sw">
+      <input type="checkbox" id="toggle-enabled">
+      <span class="sl"></span>
+    </label>
+  </div>
+
+  <div class="stats">
+    <div class="stat">
+      <div class="n" id="s-blocked">0</div>
+      <div class="l">bloccati</div>
+    </div>
+    <div class="stat">
+      <div class="n" id="s-reports">0</div>
+      <div class="l">segnalati</div>
+    </div>
+    <div class="stat">
+      <div class="n" id="s-unlocked">0</div>
+      <div class="l">sbloccati</div>
+    </div>
+  </div>
+
+  <div class="sec">
+    <div class="sec-head">
+      <span>Giochi bloccati</span>
+      <input type="text" id="search" placeholder="Cerca...">
+    </div>
+    <div id="list" class="list"></div>
+  </div>
+
+  <div class="sec">
+    <div class="sec-head">Webhook segnalazioni</div>
+    <div class="row">
+      <input type="password" id="wh-url" placeholder="https://discord.com/api/webhooks/...">
+      <button id="save-wh" type="button">Salva</button>
+    </div>
+    <div id="wh-status" class="hint"></div>
+  </div>
+
+  <div class="sec">
+    <div class="sec-head">Sync remoto (opzionale)</div>
+    <div class="row">
+      <input type="text" id="sync-url" placeholder="https://.../blocklist.json">
+      <button id="save-sync" type="button">Salva</button>
+      <button id="force-sync" type="button">Sync</button>
+    </div>
+    <div id="sync-status" class="hint"></div>
+  </div>
+
+  <div class="foot">
+    <span>v1.0.0</span>
+    <span id="last-sync"></span>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
