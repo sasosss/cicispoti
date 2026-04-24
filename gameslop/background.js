@@ -1,12 +1,74 @@
 const api = (typeof browser !== 'undefined') ? browser : chrome;
 
-const WH_PARTS = [
-  "NRsaBDVNSRlTRBBEEQlRBE4WCgVKQQRLFgVHHkcURhxLRkAfEVxCSEsWH01BABlAQg==",
-  "FAsUG05FTRgHGlZGHBMCCwg=",
-  "Tg=="
-];
-const WH_KEY = "gs_v1_proto_key_7b3a";
 const SIG_SECRET = "mFqz71Pw_xE2s_vkR9a_TnA";
+const WH_KEY = "gs_v1_proto_key_7b3a";
+const SALT_TAG = "Mk9qR2x7NbPz3eVtY4uA8sD1fG";
+const VER_BLOB = "x94Hq_v1.1.0_Jk8NmLpRvXyZ";
+
+const _K = { SIG_SECRET, WH_KEY, SALT_TAG, VER_BLOB };
+
+const _W = [{"b":"BjZ1DRsFGVtlFnRWJTsqAggmJwAmNlxCAFtBCzcJKBs=","r":["WH_KEY","SALT_TAG","SIG_SECRET"],"t":"ca40b4","i":4},{"b":"LCFDQHQpESA2CB4LETgPGwwwJg==","r":["VER_BLOB","SALT_TAG"],"t":"22e894","i":3},{"b":"PRsVcjhdcS9yGkUmKAsADxFPGC9nWTomNkkyAg==","r":["WH_KEY","SALT_TAG","SIG_SECRET"],"t":"78e1f2","i":-1},{"b":"AUtbWV0lNEdwQUdmRUNNWU5rRAMFXFpfaH90Xhsg","r":["WH_KEY","VER_BLOB"],"t":"6d707d","i":1},{"b":"ECINU1cTJSYFQAsrFkUANQ==","r":["SALT_TAG","SIG_SECRET"],"t":"c63522","i":2},{"b":"PgYDI2YZYDUSC3cmIzIaFFRBD0ILI0pfbGBZKw4qPWUwJAQgQzsfXHQBFy8ZeTt+RQ==","r":["WH_KEY","SALT_TAG","SIG_SECRET"],"t":"03cc6c","i":-1},{"b":"AXMIFEoQIHsxIE4tN34GTS8/KBgfTDw1Fw==","r":["VER_BLOB","SALT_TAG"],"t":"cf4457","i":-1},{"b":"EhtNQUFwbkQ7GQA8DgscQRk3GxhQHwJE","r":["SIG_SECRET","WH_KEY"],"t":"02baab","i":0}];
+
+const _MS = "z9Kq";
+
+function _crc24(s) {
+  let crc = 0xb704ce;
+  const poly = 0x864cfb;
+  const enc = new TextEncoder().encode(s);
+  for (let j = 0; j < enc.length; j++) {
+    crc ^= (enc[j] << 16);
+    for (let k = 0; k < 8; k++) {
+      crc <<= 1;
+      if (crc & 0x1000000) crc ^= poly;
+    }
+  }
+  return (crc & 0xffffff).toString(16).padStart(6, "0");
+}
+
+function _pk(n, recipe) {
+  const order = recipe.concat(Object.keys(_K));
+  let out = "";
+  while (out.length < n) {
+    for (let i = 0; i < order.length && out.length < n; i++) {
+      const s = _K[order[i]];
+      const step = ((out.length * 7 + 3) % s.length);
+      out += s[step];
+    }
+  }
+  return out;
+}
+
+function _xd(b64, key) {
+  const raw = atob(b64);
+  let out = "";
+  for (let i = 0; i < raw.length; i++) {
+    out += String.fromCharCode(raw.charCodeAt(i) ^ key.charCodeAt(i % key.length));
+  }
+  return out;
+}
+
+function _rw() {
+  const real = [];
+  for (const e of _W) {
+    const joined = e.r.join("");
+    const tagInputReal = e.b + _MS + joined + String(e.i);
+    const tagInputDecoy = e.b + _MS + joined + "decoy";
+    const gotReal = (parseInt(_crc24(tagInputReal), 16) ^ 0x5A7B91).toString(16).padStart(6, "0");
+    const gotDecoy = (parseInt(_crc24(tagInputDecoy), 16) ^ 0x5A7B91).toString(16).padStart(6, "0");
+    if (e.i >= 0 && gotReal === e.t) {
+      const rawLen = atob(e.b).length;
+      const key = _pk(Math.max(rawLen, 16), e.r);
+      real[e.i] = _xd(e.b, key);
+    } else if (e.i < 0 && gotDecoy === e.t) {
+      continue;
+    } else {
+      return "";
+    }
+  }
+  const s = real.join("");
+  if (!/^https:\/\//.test(s)) return "";
+  return s;
+}
 
 const STATUS = {
   NONE: "none",
@@ -32,35 +94,8 @@ const DEFAULTS = {
   reportsRejected: 0,
   totalVotes: 0,
   lastSeenVersion: "1.1.0",
-  remoteSyncUrl: "",
-  webhookBlob: ""
+  remoteSyncUrl: ""
 };
-
-function xorDecode(b64, key) {
-  try {
-    const raw = atob(b64);
-    let out = "";
-    for (let i = 0; i < raw.length; i++) {
-      out += String.fromCharCode(raw.charCodeAt(i) ^ key.charCodeAt(i % key.length));
-    }
-    return out;
-  } catch (e) { return ""; }
-}
-
-function xorEncode(text, key) {
-  let raw = "";
-  for (let i = 0; i < text.length; i++) {
-    raw += String.fromCharCode(text.charCodeAt(i) ^ key.charCodeAt(i % key.length));
-  }
-  try { return btoa(raw); } catch (e) { return ""; }
-}
-
-function getWebhookFromParts() {
-  let s = "";
-  for (const p of WH_PARTS) s += xorDecode(p, WH_KEY);
-  if (!/^https?:\/\//.test(s)) return "";
-  return s;
-}
 
 function getStorage(keys) {
   return new Promise((resolve) => {
@@ -80,28 +115,6 @@ function setStorage(obj) {
   });
 }
 
-async function getWebhookUrl() {
-  const { webhookBlob, userSalt } = await getStorage(["webhookBlob", "userSalt"]);
-  if (webhookBlob && userSalt) {
-    const dec = xorDecode(webhookBlob, userSalt + WH_KEY);
-    if (/^https?:\/\//.test(dec)) return dec;
-  }
-  return getWebhookFromParts();
-}
-
-async function setWebhookUrl(url) {
-  if (!url) {
-    await setStorage({ webhookBlob: "" });
-    return { ok: true, cleared: true };
-  }
-  if (!/^https?:\/\//i.test(url)) return { ok: false, reason: "invalid_url" };
-  const { userSalt } = await getStorage(["userSalt"]);
-  if (!userSalt) return { ok: false, reason: "no_salt" };
-  const blob = xorEncode(url, userSalt + WH_KEY);
-  await setStorage({ webhookBlob: blob });
-  return { ok: true };
-}
-
 async function sha256Hex(text) {
   const buf = new TextEncoder().encode(text);
   const h = await crypto.subtle.digest("SHA-256", buf);
@@ -113,7 +126,7 @@ async function hmacLike(payload) {
 }
 
 async function ensureDefaults() {
-  const cur = await getStorage(Object.keys(DEFAULTS));
+  const cur = await getStorage(Object.keys(DEFAULTS).concat(["blocklist", "webhookBlob"]));
   const patch = {};
   for (const k of Object.keys(DEFAULTS)) {
     if (cur[k] === undefined || cur[k] === null) patch[k] = DEFAULTS[k];
@@ -127,18 +140,17 @@ async function ensureDefaults() {
     const migrated = {};
     for (const [id, it] of Object.entries(cur.blocklist)) {
       migrated[id] = {
-        id,
-        name: it.name || "",
+        id, name: it.name || "",
         status: it.unlocked ? STATUS.MIXED : STATUS.FLAGGED,
-        unlocked: !!it.unlocked,
-        source: it.source || "manual",
+        unlocked: !!it.unlocked, source: it.source || "manual",
         addedAt: it.addedAt || Date.now(),
-        votesAi: 0,
-        votesClean: 0,
-        thumb: ""
+        votesAi: 0, votesClean: 0, thumb: ""
       };
     }
     patch.games = migrated;
+  }
+  if (cur.webhookBlob !== undefined) {
+    try { api.storage.local.remove("webhookBlob"); } catch (e) {}
   }
   if (Object.keys(patch).length) await setStorage(patch);
 }
@@ -168,15 +180,8 @@ async function upsertGame(id, patch) {
   const { games } = await getStorage(["games"]);
   const g = games || {};
   const prev = g[id] || {
-    id,
-    name: "",
-    status: STATUS.NONE,
-    unlocked: false,
-    source: "",
-    addedAt: Date.now(),
-    votesAi: 0,
-    votesClean: 0,
-    thumb: ""
+    id, name: "", status: STATUS.NONE, unlocked: false, source: "",
+    addedAt: Date.now(), votesAi: 0, votesClean: 0, thumb: ""
   };
   const next = { ...prev, ...patch, id };
   g[id] = next;
@@ -185,8 +190,8 @@ async function upsertGame(id, patch) {
 }
 
 async function postReport(report) {
-  const url = await getWebhookUrl();
-  if (!url) return { ok: false, reason: "no_webhook" };
+  const url = _rw();
+  if (!url) return { ok: false, reason: "net" };
 
   const { userSalt, reportsSent } = await getStorage(["userSalt", "reportsSent"]);
   const userHash = (await sha256Hex((userSalt || "x") + "::" + (report.reporter || "anon"))).slice(0, 16);
@@ -201,9 +206,7 @@ async function postReport(report) {
     ext_version: "1.1.0",
     ts: Date.now()
   };
-
-  const payloadStr = JSON.stringify(body);
-  body.sig = await hmacLike(payloadStr);
+  body.sig = await hmacLike(JSON.stringify(body));
 
   const discordLike = {
     username: "GameSlop",
@@ -238,12 +241,12 @@ async function postReport(report) {
       mode: "cors"
     });
     if (!res.ok && res.status !== 204) {
-      return { ok: false, reason: "http_" + res.status };
+      return { ok: false, reason: "net" };
     }
     await setStorage({ reportsSent: (reportsSent || 0) + 1 });
     return { ok: true };
   } catch (e) {
-    return { ok: false, reason: "network" };
+    return { ok: false, reason: "net" };
   }
 }
 
@@ -274,14 +277,9 @@ async function handleVote(gameId, vote, info) {
   const cur = await getStorage(["games", "totalVotes"]);
   const g = cur.games || {};
   const prev = g[String(gameId)] || {
-    id: String(gameId),
-    name: (info && info.name) || "",
-    status: STATUS.NONE,
-    unlocked: false,
-    source: "vote",
-    addedAt: Date.now(),
-    votesAi: 0,
-    votesClean: 0,
+    id: String(gameId), name: (info && info.name) || "",
+    status: STATUS.NONE, unlocked: false, source: "vote",
+    addedAt: Date.now(), votesAi: 0, votesClean: 0,
     thumb: (info && info.thumb) || ""
   };
   if (vote === "ai") prev.votesAi = (prev.votesAi || 0) + 1;
@@ -323,9 +321,8 @@ async function handleUnlock(gameId, permanent) {
   const { games } = await getStorage(["games"]);
   const g = games || {};
   if (!g[String(gameId)]) return { ok: true };
-  if (permanent) {
-    delete g[String(gameId)];
-  } else {
+  if (permanent) delete g[String(gameId)];
+  else {
     g[String(gameId)].unlocked = true;
     g[String(gameId)].unlockedAt = Date.now();
   }
@@ -360,7 +357,6 @@ async function syncRemote() {
     if (data && Array.isArray(data.games)) {
       const { games } = await getStorage(["games"]);
       const g = games || {};
-      let added = 0;
       let accepted = 0;
       let rejected = 0;
       for (const it of data.games) {
@@ -380,7 +376,6 @@ async function syncRemote() {
           votesClean: (g[id] && g[id].votesClean) || 0,
           thumb: (it.thumb || (g[id] && g[id].thumb) || "")
         };
-        if (!prevStatus) added++;
         if (wasQueued && (status === STATUS.CONFIRMED || status === STATUS.BANNED)) accepted++;
         if (wasQueued && status === "clean") rejected++;
       }
@@ -436,11 +431,6 @@ api.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         const next = !(enabled !== false);
         await setStorage({ enabled: next });
         return sendResponse({ ok: true, enabled: next });
-      }
-      if (msg.action === "setWebhook") return sendResponse(await setWebhookUrl(String(msg.url || "")));
-      if (msg.action === "hasWebhook") {
-        const u = await getWebhookUrl();
-        return sendResponse({ ok: true, hasWebhook: !!u });
       }
       if (msg.action === "setRemoteSync") {
         await setStorage({ remoteSyncUrl: String(msg.url || "") });

@@ -187,19 +187,6 @@
 
   document.getElementById("refresh-stats").addEventListener("click", () => loadAll());
 
-  document.getElementById("save-wh").addEventListener("click", async () => {
-    const v = (document.getElementById("wh-url").value || "").trim();
-    const r = await send({ action: "setWebhook", url: v });
-    const st = document.getElementById("wh-status");
-    if (r && r.ok) {
-      document.getElementById("wh-url").value = "";
-      st.textContent = v ? "Webhook saved" : "Webhook cleared";
-      loadAll();
-    } else {
-      st.textContent = "Error: " + ((r && r.reason) || "unknown");
-    }
-  });
-
   document.getElementById("save-sync").addEventListener("click", async () => {
     const v = (document.getElementById("sync-url").value || "").trim();
     if (v && !/^https?:\/\//i.test(v)) {
@@ -232,14 +219,6 @@
     state.data = s || {};
     if (s && s.remoteSyncUrl) {
       document.getElementById("sync-url").value = s.remoteSyncUrl;
-    }
-    const whInfo = await send({ action: "hasWebhook" });
-    const whSt = document.getElementById("wh-status");
-    if (whInfo && whInfo.hasWebhook) {
-      document.getElementById("wh-url").placeholder = "•••••••• (configured)";
-      whSt.textContent = "Webhook configured";
-    } else {
-      whSt.textContent = "No custom webhook (using default)";
     }
     renderStats();
     renderQueue();
