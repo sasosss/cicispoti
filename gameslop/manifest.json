@@ -9,7 +9,8 @@
   ],
   "host_permissions": [
     "https://www.roblox.com/*",
-    "https://*.roblox.com/*"
+    "https://*.roblox.com/*",
+    "https://discord.com/*"
   ],
   "background": {
     "service_worker": "background.js",
