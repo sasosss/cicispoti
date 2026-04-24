@@ -688,6 +688,8 @@
       if (gameId !== GS.lastGameId) {
         GS.lastGameId = gameId;
         removePanel();
+        sendMsg({ action: "checkPolls" });
+        schedulePollCheck();
       }
       renderPanelIfOnDetail();
       lockPlayButtonIfNeeded();
@@ -725,11 +727,47 @@
   }
   function escapeAttr(s) { return escapeHtml(s); }
 
+  let pollCheckTimer = 0;
+  function schedulePollCheck() {
+    clearTimeout(pollCheckTimer);
+    pollCheckTimer = setTimeout(() => {
+      const gameId = getCurrentGameId();
+      if (!gameId) return;
+      const g = GS.games[String(gameId)];
+      const pending = g && g.pollMessageId && !g.pollResolved &&
+        (g.status === STATUS.QUEUED || g.status === STATUS.FLAGGED || g.status === STATUS.MIXED);
+      const anyPending = pending || Object.values(GS.games || {}).some(
+        (x) => x && x.pollMessageId && !x.pollResolved
+      );
+      if (anyPending) {
+        sendMsg({ action: "checkPolls" });
+        schedulePollCheck();
+      }
+    }, 8000);
+  }
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) {
+      sendMsg({ action: "checkPolls" });
+      schedulePollCheck();
+    }
+  });
+  window.addEventListener("focus", () => {
+    sendMsg({ action: "checkPolls" });
+    schedulePollCheck();
+  });
+
   function startup() {
     try {
       obs.observe(document.documentElement || document.body, { childList: true, subtree: true });
     } catch (e) { }
-    refreshState().then(() => scanAndInject());
+    refreshState().then(() => {
+      scanAndInject();
+      const gid = getCurrentGameId();
+      if (gid) {
+        sendMsg({ action: "checkPolls" });
+        schedulePollCheck();
+      }
+    });
   }
 
   let storageDebounce = 0;
