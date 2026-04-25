@@ -96,9 +96,16 @@ const DEFAULTS = {
   reportsAccepted: 0,
   reportsRejected: 0,
   totalVotes: 0,
-  lastSeenVersion: "1.2.0",
-  remoteSyncUrl: ""
+  lastSeenVersion: "1.2.1",
+  remoteSyncUrl: "",
+  lastBlocklistSyncAt: 0
 };
+
+/** Curated list shipped with the extension; same URL for every user (survives reinstall). */
+const DEFAULT_PUBLIC_BLOCKLIST_URL =
+  "https://raw.githubusercontent.com/sasosss/cicispoti/main/gameslop/blocklist.json";
+
+const BLOCKLIST_SYNC_MIN_MS = 5 * 60 * 1000;
 
 function getStorage(keys) {
   return new Promise((resolve) => {
@@ -214,7 +221,7 @@ async function postReport(report) {
     group_url: String(report.groupUrl || "").slice(0, 300),
     reason: String(report.reason || "").slice(0, 280),
     reporter_hash: userHash,
-    ext_version: "1.2.0",
+    ext_version: "1.2.1",
     ts: Date.now()
   };
   body.sig = await hmacLike(JSON.stringify(body));
@@ -581,47 +588,124 @@ async function handleGetState() {
   };
 }
 
-async function syncRemote() {
-  const { remoteSyncUrl } = await getStorage(["remoteSyncUrl"]);
-  if (!remoteSyncUrl) return;
-  try {
-    const r = await fetch(remoteSyncUrl, { credentials: "omit", referrerPolicy: "no-referrer" });
-    if (!r.ok) return;
-    const data = await r.json();
-    if (data && Array.isArray(data.games)) {
-      const { games } = await getStorage(["games"]);
-      const g = games || {};
-      let accepted = 0;
-      let rejected = 0;
-      for (const it of data.games) {
-        const id = String(it.id || it.gameId || "");
-        if (!id) continue;
-        const prevStatus = g[id] && g[id].status;
-        const status = (it.status || STATUS.CONFIRMED).toLowerCase();
-        const wasQueued = prevStatus === STATUS.QUEUED || prevStatus === STATUS.FLAGGED;
-        g[id] = {
-          id,
-          name: String(it.name || (g[id] && g[id].name) || "").slice(0, 140),
-          status: Object.values(STATUS).includes(status) ? status : STATUS.CONFIRMED,
-          unlocked: g[id] ? !!g[id].unlocked : false,
-          source: "remote",
-          addedAt: (g[id] && g[id].addedAt) || Date.now(),
-          votesAi: (g[id] && g[id].votesAi) || 0,
-          votesClean: (g[id] && g[id].votesClean) || 0,
-          thumb: (it.thumb || (g[id] && g[id].thumb) || "")
-        };
-        if (wasQueued && (status === STATUS.CONFIRMED || status === STATUS.BANNED)) accepted++;
-        if (wasQueued && status === "clean") rejected++;
-      }
-      const cur = await getStorage(["reportsAccepted", "reportsRejected"]);
-      await setStorage({
-        games: g,
-        reportsAccepted: (cur.reportsAccepted || 0) + accepted,
-        reportsRejected: (cur.reportsRejected || 0) + rejected
-      });
-      STATE.lastSyncAt = Date.now();
+function normalizeRemoteStatus(raw) {
+  const status = String(raw || STATUS.CONFIRMED).toLowerCase();
+  if (status === "clean") return STATUS.NONE;
+  return Object.values(STATUS).includes(status) ? status : STATUS.CONFIRMED;
+}
+
+/**
+ * Merges one blocklist JSON into local maps. `sourceKey` is stored on touched rows (e.g. remote vs public_blocklist).
+ * Returns delta counters for reportsAccepted / reportsRejected (same rules as before).
+ */
+function mergeBlocklistPayload(games, owners, groups, data, sourceKey) {
+  let accepted = 0;
+  let rejected = 0;
+  if (!data || typeof data !== "object") return { accepted, rejected };
+
+  if (Array.isArray(data.games)) {
+    for (const it of data.games) {
+      const id = String(it.id || it.gameId || "");
+      if (!id) continue;
+      const prev = games[id];
+      const prevStatus = prev && prev.status;
+      const status = normalizeRemoteStatus(it.status);
+      const wasQueued = prevStatus === STATUS.QUEUED || prevStatus === STATUS.FLAGGED;
+      games[id] = {
+        id,
+        name: String(it.name || (prev && prev.name) || "").slice(0, 140),
+        status,
+        unlocked: prev ? !!prev.unlocked : false,
+        source: sourceKey,
+        addedAt: (prev && prev.addedAt) || Date.now(),
+        votesAi: (prev && prev.votesAi) || 0,
+        votesClean: (prev && prev.votesClean) || 0,
+        thumb: String(it.thumb || (prev && prev.thumb) || "").slice(0, 500)
+      };
+      if (wasQueued && (status === STATUS.CONFIRMED || status === STATUS.BANNED)) accepted++;
+      if (wasQueued && status === STATUS.NONE) rejected++;
     }
-  } catch (e) { }
+  }
+
+  function mergeCreatorRows(arr, bucket, type) {
+    if (!Array.isArray(arr)) return;
+    for (const it of arr) {
+      const id = String(
+        it.id || (type === "owner" ? it.owner_id : "") || (type === "group" ? it.group_id : "") || ""
+      );
+      if (!id) continue;
+      const prev = bucket[id];
+      const prevStatus = prev && prev.status;
+      const status = normalizeRemoteStatus(it.status);
+      const wasQueued = prevStatus === STATUS.QUEUED || prevStatus === STATUS.FLAGGED;
+      bucket[id] = {
+        id,
+        type,
+        name: String(it.name || (prev && prev.name) || "").slice(0, 80),
+        url: String(it.url || (prev && prev.url) || "").slice(0, 300),
+        status,
+        pollMessageId: (prev && prev.pollMessageId) || "",
+        pollResolved: !!(prev && prev.pollResolved),
+        pollCheckedAt: (prev && prev.pollCheckedAt) || 0,
+        addedAt: (prev && prev.addedAt) || Date.now()
+      };
+      if (wasQueued && (status === STATUS.CONFIRMED || status === STATUS.BANNED)) accepted++;
+      if (wasQueued && status === STATUS.NONE) rejected++;
+    }
+  }
+
+  mergeCreatorRows(data.owners, owners, "owner");
+  mergeCreatorRows(data.groups, groups, "group");
+
+  return { accepted, rejected };
+}
+
+async function syncRemote(force) {
+  const meta = await getStorage(["lastBlocklistSyncAt"]);
+  if (!force && Date.now() - (Number(meta.lastBlocklistSyncAt) || 0) < BLOCKLIST_SYNC_MIN_MS) {
+    return;
+  }
+
+  const { remoteSyncUrl } = await getStorage(["remoteSyncUrl"]);
+  const custom = String(remoteSyncUrl || "").trim();
+  const sources = [];
+  if (custom) sources.push({ url: custom, sourceKey: "remote" });
+  if (!sources.some((s) => s.url === DEFAULT_PUBLIC_BLOCKLIST_URL)) {
+    sources.push({ url: DEFAULT_PUBLIC_BLOCKLIST_URL, sourceKey: "public_blocklist" });
+  }
+
+  const cur = await getStorage(["games", "owners", "groups", "reportsAccepted", "reportsRejected"]);
+  const games = { ...(cur.games || {}) };
+  const owners = { ...(cur.owners || {}) };
+  const groups = { ...(cur.groups || {}) };
+  let accDelta = 0;
+  let rejDelta = 0;
+  let anyOk = false;
+
+  for (const { url, sourceKey } of sources) {
+    try {
+      const r = await fetch(url, { credentials: "omit", referrerPolicy: "no-referrer" });
+      if (!r.ok) continue;
+      const data = await r.json();
+      const d = mergeBlocklistPayload(games, owners, groups, data, sourceKey);
+      accDelta += d.accepted;
+      rejDelta += d.rejected;
+      anyOk = true;
+    } catch (e) { }
+  }
+
+  if (anyOk) {
+    const now = Date.now();
+    await setStorage({
+      games,
+      owners,
+      groups,
+      reportsAccepted: (cur.reportsAccepted || 0) + accDelta,
+      reportsRejected: (cur.reportsRejected || 0) + rejDelta,
+      lastBlocklistSyncAt: now
+    });
+    STATE.lastSyncAt = now;
+  }
 }
 
 async function handleClearData() {
@@ -633,8 +717,10 @@ async function handleClearData() {
     reportsSent: 0,
     reportsAccepted: 0,
     reportsRejected: 0,
-    totalVotes: 0
+    totalVotes: 0,
+    lastBlocklistSyncAt: 0
   });
+  syncRemote(true).catch(() => {});
   return { ok: true };
 }
 
@@ -644,6 +730,7 @@ api.runtime.onInstalled.addListener(async () => {
     api.alarms.create("gs_sync", { periodInMinutes: 60 });
     api.alarms.create("gs_poll_check", { periodInMinutes: 0.5 });
   } catch (e) { }
+  syncRemote(true).catch(() => {});
 });
 
 api.runtime.onStartup && api.runtime.onStartup.addListener(async () => {
@@ -651,12 +738,13 @@ api.runtime.onStartup && api.runtime.onStartup.addListener(async () => {
   try {
     api.alarms.create("gs_poll_check", { periodInMinutes: 0.5 });
   } catch (e) { }
+  syncRemote(true).catch(() => {});
 });
 
 if (api.alarms && api.alarms.onAlarm) {
   api.alarms.onAlarm.addListener((alarm) => {
     if (!alarm) return;
-    if (alarm.name === "gs_sync") syncRemote();
+    if (alarm.name === "gs_sync") syncRemote(false);
     if (alarm.name === "gs_poll_check") checkPendingPolls().catch(() => {});
   });
 }
@@ -679,11 +767,11 @@ api.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       }
       if (msg.action === "setRemoteSync") {
         await setStorage({ remoteSyncUrl: String(msg.url || "") });
-        syncRemote();
+        syncRemote(true);
         return sendResponse({ ok: true });
       }
       if (msg.action === "forceSync") {
-        await syncRemote();
+        await syncRemote(true);
         return sendResponse({ ok: true, lastSyncAt: STATE.lastSyncAt });
       }
       if (msg.action === "checkPolls") {
@@ -709,3 +797,4 @@ api.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 });
 
 ensureDefaults();
+syncRemote(true).catch(() => {});
