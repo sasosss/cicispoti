@@ -30,11 +30,11 @@ Prebuilt archives live in [`dist/`](../dist) (run `./scripts/build.sh` to regene
 
 ### Chrome / Edge / Brave
 1. `chrome://extensions` → enable Developer mode
-2. Either drag `dist/gameslop-1.2.0.zip` onto the page, or unzip and click "Load unpacked" on the extracted folder.
+2. Either drag `dist/gameslop-1.2.1.zip` onto the page, or unzip and click "Load unpacked" on the extracted folder.
 
 ### Firefox (temporary install)
 1. `about:debugging#/runtime/this-firefox`
-2. "Load Temporary Add-on…" → select `dist/gameslop-1.2.0.xpi`
+2. "Load Temporary Add-on…" → select `dist/gameslop-1.2.1.xpi`
 
 Reports are sent automatically on submission. No setup required.
 
@@ -45,4 +45,13 @@ When a user reports a game, the extension posts a Discord poll to the configured
 - ✅ **Reject** → game treated as `clean`
 - 🔨 **Ban** → game becomes `banned`
 
-The remote sync URL (Settings tab) lets the curated outcome propagate back to all installs: when a `queued` game flips to `confirmed`/`banned` via sync, the local copy is updated and the play button is blocked.
+### Shared database (not just local)
+
+`chrome.storage.local` is **per browser** and is **wiped when the extension is removed**. To keep the same AI-flagged games for **every user** and after **reinstall**, the extension always fetches a public JSON blocklist:
+
+- Default URL: `gameslop/blocklist.json` on the `main` branch of this repo (GitHub raw). Edit that file (or your fork) to publish confirmed games, owners, and groups.
+- Shape: `{ "games": [...], "owners": [...], "groups": [...] }` — each item needs at least `id` (or `gameId` / `owner_id` / `group_id`) and optional `name`, `thumb`, `url`, `status` (`confirmed`, `banned`, `none`, etc.).
+
+On install, startup, service worker wake, hourly alarm, and after clearing local data, the extension merges those lists into local storage (custom URL in Settings is **optional** and merged on top when set).
+
+The remote sync URL (Settings tab) still lets you add a **second** admin-curated endpoint; both feeds are merged.
