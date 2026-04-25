@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "GameSlop",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "description": "Real-time AI detection that flags AI-generated Roblox games before you play them.",
   "permissions": [
     "storage",
@@ -11,7 +11,9 @@
     "https://www.roblox.com/*",
     "https://*.roblox.com/*",
     "https://discord.com/*",
-    "https://raw.githubusercontent.com/*"
+    "https://raw.githubusercontent.com/*",
+    "https://users.roblox.com/*",
+    "https://groups.roblox.com/*"
   ],
   "background": {
     "service_worker": "background.js",

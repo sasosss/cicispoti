@@ -7,7 +7,8 @@ Cross-browser extension (Chrome + Firefox, Manifest V3) that flags AI-generated 
 - **Floating panel** on every game page (`/games/{id}`) with avatar, name, ID and a colored status badge (`Not Flagged`, `Under Review`, `Flagged`, `Mixed`, `Confirmed AI`, `Banned`). One-click "Queue for Review" or "Looks legit" vote.
 - **3-dots menu** on every game card (home, categories, search, profile) to report / vote / block / unlock without leaving the page.
 - **Blocked games**: Play button disabled, card overlay with "Confirmed AI" / "Banned" label, anchor click intercepted.
-- **Popup** — Overview, Games, Creators, Settings: stats, filterable game list, owner/group queues, protection toggle, optional second blocklist URL, clear data.
+- **Popup** — Overview, Games, Creators, Settings: stats, filterable game list, owner/group queues, protection toggle, optional second blocklist URL, **admin blocklist tools** (flag owner by Roblox username or ID, or group by name or ID; optional Discord poll or instant local status), clear data.
+- **User reports** — only the **game** is reported to Discord; owner/group flags are admin-only (popup + shared `blocklist.json`).
 - **Rate limit** (5 reports / minute, 3s min gap) + **dedup** (6h) + **pseudo-HMAC** signature on each report.
 
 ## Status model
@@ -27,11 +28,11 @@ Prebuilt archives live in [`dist/`](../dist) (run `./scripts/build.sh` to regene
 
 ### Chrome / Edge / Brave
 1. `chrome://extensions` → enable Developer mode
-2. Either drag `dist/gameslop-1.2.1.zip` onto the page, or unzip and click "Load unpacked" on the extracted folder.
+2. Either drag `dist/gameslop-1.2.2.zip` onto the page, or unzip and click "Load unpacked" on the extracted folder.
 
 ### Firefox (temporary install)
 1. `about:debugging#/runtime/this-firefox`
-2. "Load Temporary Add-on…" → select `dist/gameslop-1.2.1.xpi`
+2. "Load Temporary Add-on…" → select `dist/gameslop-1.2.2.xpi`
 
 Reports are sent automatically on submission. No setup required.
 

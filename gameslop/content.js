@@ -22,6 +22,8 @@
   const GS = {
     enabled: true,
     games: {},
+    owners: {},
+    groups: {},
     myVotes: {},
     processedCards: new WeakSet(),
     lastUrl: location.href,
@@ -49,6 +51,8 @@
     if (s && typeof s === "object") {
       GS.enabled = s.enabled !== false;
       GS.games = s.games || {};
+      GS.owners = s.owners || {};
+      GS.groups = s.groups || {};
       GS.myVotes = s.myVotes || {};
     }
   }
@@ -161,12 +165,79 @@
     return g.status || STATUS.NONE;
   }
 
-  function isBlocked(gameId) {
+  function blockedCreatorStatus(row) {
+    if (!row || row.unlocked) return null;
+    const s = row.status || STATUS.NONE;
+    if (s === STATUS.FLAGGED || s === STATUS.CONFIRMED || s === STATUS.BANNED) return s;
+    return null;
+  }
+
+  function isBlockedByCreatorOnPage() {
+    if (!GS.enabled) return false;
+    const c = getCreatorInfo();
+    const o = c.ownerId && GS.owners[String(c.ownerId)];
+    const g = c.groupId && GS.groups[String(c.groupId)];
+    if (blockedCreatorStatus(o) || blockedCreatorStatus(g)) return true;
+    return false;
+  }
+
+  function isGameDirectBlocked(gameId) {
     const g = GS.games[String(gameId)];
     if (!g) return false;
     if (g.unlocked) return false;
     const s = g.status;
     return s === STATUS.FLAGGED || s === STATUS.CONFIRMED || s === STATUS.BANNED;
+  }
+
+  function isDetailPagePlayBlocked(gameId) {
+    return isGameDirectBlocked(gameId) || isBlockedByCreatorOnPage();
+  }
+
+  function effectiveDetailBlockLabel(gameId) {
+    if (isGameDirectBlocked(gameId)) {
+      return STATUS_LABEL[getGameStatus(gameId)] || "Blocked";
+    }
+    const c = getCreatorInfo();
+    const o = c.ownerId && GS.owners[String(c.ownerId)];
+    const g = c.groupId && GS.groups[String(c.groupId)];
+    const row = blockedCreatorStatus(o) || blockedCreatorStatus(g) ? (blockedCreatorStatus(o) ? o : g) : null;
+    if (row) return STATUS_LABEL[row.status] || "Blocked";
+    return "Blocked";
+  }
+
+  function detailPlayLockLabel(gameId) {
+    if (getGameStatus(gameId) === STATUS.BANNED) return "Banned";
+    const c = getCreatorInfo();
+    const o = c.ownerId && GS.owners[String(c.ownerId)];
+    const g = c.groupId && GS.groups[String(c.groupId)];
+    if ((o && o.status === STATUS.BANNED) || (g && g.status === STATUS.BANNED)) return "Banned";
+    return "Blocked (AI)";
+  }
+
+  function extractOwnerGroupIdsFromCard(card) {
+    const scope = card.matches("a") ? card.closest("div") || card.parentElement : card;
+    const root = scope || card;
+    const ua = root.querySelector("a[href*='/users/']");
+    const ga = root.querySelector("a[href*='/groups/'], a[href*='/communities/']");
+    let ownerId = "";
+    let groupId = "";
+    if (ua) {
+      const m = (ua.getAttribute("href") || "").match(/\/users\/(\d+)/);
+      if (m) ownerId = m[1];
+    }
+    if (ga) {
+      const m = (ga.getAttribute("href") || "").match(/\/(?:groups|communities)\/(\d+)/);
+      if (m) groupId = m[1];
+    }
+    return { ownerId, groupId };
+  }
+
+  function isCardBlockedByCreator(card) {
+    if (!GS.enabled) return false;
+    const { ownerId, groupId } = extractOwnerGroupIdsFromCard(card);
+    const o = ownerId && GS.owners[String(ownerId)];
+    const g = groupId && GS.groups[String(groupId)];
+    return !!(blockedCreatorStatus(o) || blockedCreatorStatus(g));
   }
 
   function statusBadgeClass(status) {
@@ -222,25 +293,16 @@
       <div class="gs-modal-back"></div>
       <div class="gs-modal">
         <div class="gs-modal-head">
-          <div class="gs-modal-title">Report AI-generated content</div>
+          <div class="gs-modal-title">Report AI-generated game</div>
           <button class="gs-modal-x" type="button" aria-label="Close">×</button>
         </div>
         <div class="gs-modal-body">
           <div class="gs-row"><span class="gs-k">Game:</span> <span class="gs-v" id="gs-m-name"></span></div>
           <div class="gs-row"><span class="gs-k">ID:</span> <span class="gs-v" id="gs-m-id"></span></div>
 
-          <div class="gs-seg">
-            <div class="gs-seg-lbl">Flag target</div>
-            <div class="gs-seg-opts">
-              <label class="gs-seg-opt"><input type="radio" name="gs-target" value="game" checked><span>Game</span></label>
-              <label class="gs-seg-opt gs-seg-opt-owner${creator.ownerId ? "" : " gs-seg-disabled"}"><input type="radio" name="gs-target" value="owner" ${creator.ownerId ? "" : "disabled"}><span>Owner${creator.ownerName ? " (" + escapeHtml(creator.ownerName) + ")" : ""}</span></label>
-              <label class="gs-seg-opt gs-seg-opt-group${creator.groupId ? "" : " gs-seg-disabled"}"><input type="radio" name="gs-target" value="group" ${creator.groupId ? "" : "disabled"}><span>Group${creator.groupName ? " (" + escapeHtml(creator.groupName) + ")" : ""}</span></label>
-            </div>
-          </div>
-
           <label class="gs-label" for="gs-m-reason">Reason (optional)</label>
           <textarea id="gs-m-reason" maxlength="280" placeholder="e.g. AI thumbnail, generic description, recycled assets..."></textarea>
-          <div class="gs-hint">Your report is posted to admin review. A game flagged here is also blocked locally until admins vote.</div>
+          <div class="gs-hint">Your report is sent to admins for this game only. Owner/group flags are handled by admins separately.</div>
         </div>
         <div class="gs-modal-foot">
           <button class="gs-btn gs-btn-ghost" id="gs-m-cancel" type="button">Cancel</button>
@@ -261,15 +323,12 @@
     $("#gs-m-send", wrap).addEventListener("click", async () => {
       const reason = ($("#gs-m-reason", wrap).value || "").trim();
       const btn = $("#gs-m-send", wrap);
-      const targetEl = wrap.querySelector('input[name="gs-target"]:checked');
-      const targetType = targetEl ? targetEl.value : "game";
       btn.disabled = true;
       btn.textContent = "Sending...";
 
       const url = location.origin + "/games/" + gameId;
       const payload = {
         action: "report",
-        targetType,
         gameId, gameName, gameUrl: url,
         ownerId: creator.ownerId, ownerName: creator.ownerName, ownerUrl: creator.ownerUrl,
         groupId: creator.groupId, groupName: creator.groupName, groupUrl: creator.groupUrl,
@@ -457,7 +516,7 @@
     const myVote = GS.myVotes[String(gameId)] || "";
 
     const isAlreadyReported = status !== STATUS.NONE;
-    const blocked = GS.enabled && isBlocked(gameId);
+    const blocked = GS.enabled && isDetailPagePlayBlocked(gameId);
 
     const sig = [gameId, status, blocked ? 1 : 0, votesAi, votesClean, myVote, gameName].join("|");
     if (sig === GS.panelLastSig && document.getElementById("gs-panel")) return;
@@ -498,7 +557,7 @@
 
     let bodyHtml;
     if (blocked) {
-      bodyHtml = `<div class="gs-p-warn">Play is disabled because this game is <b>${escapeHtml(STATUS_LABEL[status])}</b>.</div>`;
+      bodyHtml = `<div class="gs-p-warn">Play is disabled: <b>${escapeHtml(effectiveDetailBlockLabel(gameId))}</b>.</div>`;
     } else if (status === STATUS.NONE) {
       bodyHtml = `<div class="gs-p-text">This game has not been reviewed yet.</div>`;
     } else {
@@ -535,8 +594,7 @@
     const gameId = getCurrentGameId();
     if (!gameId) return;
     if (!GS.enabled) return;
-    const blocked = isBlocked(gameId);
-    const status = getGameStatus(gameId);
+    const blocked = isDetailPagePlayBlocked(gameId);
 
     const playButtons = [
       ...$$("#game-details-play-button-container button"),
@@ -555,7 +613,7 @@
           b.disabled = true;
           b.setAttribute("aria-disabled", "true");
           b.classList.add("gs-locked");
-          b.textContent = status === STATUS.BANNED ? "Banned" : "Blocked (AI)";
+          b.textContent = detailPlayLockLabel(gameId);
           b.addEventListener("click", stopBlockedClick, true);
         }
       } else {
@@ -640,7 +698,7 @@
     if (prev) prev.remove();
 
     const status = getGameStatus(gameId);
-    const blocked = GS.enabled && isBlocked(gameId);
+    const blocked = GS.enabled && (isGameDirectBlocked(gameId) || isCardBlockedByCreator(card));
     const menu = document.createElement("div");
     menu.id = "gs-card-menu";
     menu.className = "gs-card-menu";
@@ -760,19 +818,30 @@
   }
 
   function applyBlockOnCard(card, gameId) {
-    const blocked = GS.enabled && isBlocked(gameId);
+    const gameBlocked = GS.enabled && isGameDirectBlocked(gameId);
+    const creatorBlocked = GS.enabled && isCardBlockedByCreator(card);
+    const blocked = gameBlocked || creatorBlocked;
     const status = getGameStatus(gameId);
+    const creatorRow = (() => {
+      const { ownerId, groupId } = extractOwnerGroupIdsFromCard(card);
+      const o = ownerId && GS.owners[String(ownerId)];
+      const g = groupId && GS.groups[String(groupId)];
+      return blockedCreatorStatus(o) ? o : (blockedCreatorStatus(g) ? g : null);
+    })();
 
     let badge = card.querySelector(".gs-card-badge");
-    if (status !== STATUS.NONE) {
-      const lbl = STATUS_LABEL[status];
+    if (status !== STATUS.NONE || creatorRow) {
+      const lbl = status !== STATUS.NONE
+        ? STATUS_LABEL[status]
+        : (creatorRow ? STATUS_LABEL[creatorRow.status] : "Blocked");
+      const badgeStatus = status !== STATUS.NONE ? status : creatorRow.status;
       if (!badge) {
         badge = document.createElement("div");
         badge.className = "gs-card-badge";
         card.appendChild(badge);
       }
-      badge.className = "gs-card-badge " + statusBadgeClass(status);
-      badge.innerHTML = `<span class="gs-dot ${statusDotClass(status)}"></span>${escapeHtml(lbl)}`;
+      badge.className = "gs-card-badge " + statusBadgeClass(badgeStatus);
+      badge.innerHTML = `<span class="gs-dot ${statusDotClass(badgeStatus)}"></span>${escapeHtml(lbl)}`;
     } else if (badge) {
       badge.remove();
     }
@@ -782,7 +851,10 @@
       if (!card.querySelector(".gs-card-overlay")) {
         const ov = document.createElement("div");
         ov.className = "gs-card-overlay";
-        ov.innerHTML = `<div class="gs-card-ov-text">${escapeHtml(STATUS_LABEL[status] || "Blocked")}</div>`;
+        const ovLbl = gameBlocked
+          ? (STATUS_LABEL[status] || "Blocked")
+          : (creatorRow ? STATUS_LABEL[creatorRow.status] : "Blocked");
+        ov.innerHTML = `<div class="gs-card-ov-text">${escapeHtml(ovLbl)}</div>`;
         ov.addEventListener("click", (e) => {
           e.preventDefault();
           e.stopPropagation();
@@ -917,7 +989,7 @@
   try {
     ext.storage.onChanged && ext.storage.onChanged.addListener((changes, area) => {
       if (area !== "local") return;
-      if (!changes.games && !changes.enabled && !changes.myVotes) return;
+      if (!changes.games && !changes.owners && !changes.groups && !changes.enabled && !changes.myVotes) return;
       clearTimeout(storageDebounce);
       storageDebounce = setTimeout(() => {
         refreshState().then(() => {

@@ -435,3 +435,19 @@ button, input, select, textarea { font-family: inherit; }
   background: #27272a;
   color: #fafafa;
 }
+
+.admin-row {
+  flex-wrap: wrap;
+  align-items: center;
+}
+.admin-skip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: #a1a1aa;
+  white-space: nowrap;
+}
+.admin-skip input {
+  flex-shrink: 0;
+}

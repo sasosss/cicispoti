@@ -17,7 +17,7 @@
         </div>
         <div class="brand-text">
           <div class="brand-name">GameSlop</div>
-          <div class="brand-ver">v1.2.1</div>
+          <div class="brand-ver">v1.2.2</div>
         </div>
       </div>
       <nav class="side-nav">
@@ -156,6 +156,34 @@
         </div>
 
         <div class="block">
+          <div class="block-head"><span>Admin — flag owner or group</span></div>
+          <div class="block-body">
+            <div class="set-desc">Users only report games. Admins can flag an owner (Roblox username or user ID) or a group (name or group ID): either queue a Discord poll like reports, or skip Discord and set the status immediately on this install.</div>
+            <div class="inline-row admin-row">
+              <select id="admin-kind" class="select" aria-label="Target kind">
+                <option value="owner">Owner</option>
+                <option value="group">Group</option>
+              </select>
+              <input type="text" id="admin-username" class="input" placeholder="Username, @name, or numeric ID" aria-label="Username or ID">
+            </div>
+            <div class="inline-row admin-row">
+              <select id="admin-status" class="select" aria-label="Status when skipping Discord">
+                <option value="confirmed">Confirmed AI</option>
+                <option value="banned">Banned</option>
+                <option value="flagged">Flagged</option>
+                <option value="none">Not flagged</option>
+              </select>
+              <label class="admin-skip"><input type="checkbox" id="admin-skip-discord"> Skip Discord (apply status now)</label>
+            </div>
+            <div class="inline-row">
+              <input type="text" id="admin-note" class="input" placeholder="Optional reason (Discord / notes)">
+              <button id="admin-flag-creator" class="btn" type="button">Submit</button>
+            </div>
+            <div id="admin-creator-status" class="hint"></div>
+          </div>
+        </div>
+
+        <div class="block">
           <div class="block-head"><span>Local data</span></div>
           <div class="block-body">
             <div class="set-desc">Removes every tracked game, owner, group and vote from this browser.</div>
@@ -166,7 +194,7 @@
         <div class="block">
           <div class="block-head"><span>About</span></div>
           <div class="block-body">
-            <div class="kv-line"><span>Version</span><span>1.2.1</span></div>
+            <div class="kv-line"><span>Version</span><span>1.2.2</span></div>
             <div class="kv-line"><span>Last sync</span><span id="ov-lastsync">—</span></div>
           </div>
         </div>

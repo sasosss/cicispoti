@@ -252,6 +252,37 @@
     loadAll();
   });
 
+  $("#admin-flag-creator").addEventListener("click", async () => {
+    const stEl = $("#admin-creator-status");
+    const kind = ($("#admin-kind").value || "owner").trim();
+    const username = ($("#admin-username").value || "").trim();
+    const skip = $("#admin-skip-discord").checked;
+    const status = ($("#admin-status").value || "confirmed").trim();
+    const reason = ($("#admin-note").value || "").trim();
+    if (!username) {
+      stEl.textContent = "Enter a username or ID";
+      return;
+    }
+    stEl.textContent = skip ? "Applying…" : "Sending…";
+    const r = await send({
+      action: "adminSetCreator",
+      kind,
+      username,
+      skipDiscord: skip,
+      status,
+      reason
+    });
+    if (r && r.ok) {
+      stEl.textContent = skip ? "Saved locally." : (r.messageId ? "Queued to Discord." : "Sent.");
+      $("#admin-username").value = "";
+      $("#admin-note").value = "";
+      loadAll();
+    } else {
+      const why = (r && r.reason) || "error";
+      stEl.textContent = why === "not_found" ? "User/group not found" : why === "rate_limit" ? "Rate limited" : why === "duplicate" ? "Try again later" : why === "already_pending" ? "Already pending review" : "Failed: " + why;
+    }
+  });
+
   async function loadAll() {
     const s = await send({ action: "getState" });
     state.data = s || {};

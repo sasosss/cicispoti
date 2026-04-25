@@ -4,13 +4,13 @@ This folder contains packaged builds of the extension, ready for temporary insta
 
 ## Files
 
-- `gameslop-1.2.1.zip` — packed extension (Chrome / Edge / Brave)
-- `gameslop-1.2.1.xpi` — same package renamed for Firefox temporary install
+- `gameslop-1.2.2.zip` — packed extension (Chrome / Edge / Brave)
+- `gameslop-1.2.2.xpi` — same package renamed for Firefox temporary install
 
 ## Install (Chrome / Edge / Brave)
 
 ### Option A — Unpacked (recommended for development)
-1. Unzip `gameslop-1.2.1.zip` somewhere.
+1. Unzip `gameslop-1.2.2.zip` somewhere.
 2. Open `chrome://extensions` (or `edge://extensions`, `brave://extensions`).
 3. Toggle **Developer mode** (top right).
 4. Click **Load unpacked** and select the unzipped folder.
@@ -18,7 +18,7 @@ This folder contains packaged builds of the extension, ready for temporary insta
 ### Option B — Drag & drop the zip
 1. Open `chrome://extensions`.
 2. Enable **Developer mode**.
-3. Drag `gameslop-1.2.1.zip` onto the page.
+3. Drag `gameslop-1.2.2.zip` onto the page.
 
 > Chrome will show a warning that the extension is not from the Chrome Web Store — that's expected for local installs.
 
@@ -26,7 +26,7 @@ This folder contains packaged builds of the extension, ready for temporary insta
 
 1. Open `about:debugging#/runtime/this-firefox`
 2. Click **Load Temporary Add-on…**
-3. Select `gameslop-1.2.1.xpi`
+3. Select `gameslop-1.2.2.xpi`
 
 > Temporary add-ons remain installed **until the next Firefox restart**.
 

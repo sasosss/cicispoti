@@ -96,7 +96,7 @@ const DEFAULTS = {
   reportsAccepted: 0,
   reportsRejected: 0,
   totalVotes: 0,
-  lastSeenVersion: "1.2.1",
+  lastSeenVersion: "1.2.2",
   remoteSyncUrl: "",
   lastBlocklistSyncAt: 0
 };
@@ -221,7 +221,7 @@ async function postReport(report) {
     group_url: String(report.groupUrl || "").slice(0, 300),
     reason: String(report.reason || "").slice(0, 280),
     reporter_hash: userHash,
-    ext_version: "1.2.1",
+    ext_version: "1.2.2",
     ts: Date.now()
   };
   body.sig = await hmacLike(JSON.stringify(body));
@@ -333,63 +333,57 @@ async function postReport(report) {
 
 async function handleReport(msg) {
   if (!msg) return { ok: false, reason: "bad_input" };
-  const targetType = msg.targetType || "game";
-  const targetId = String(msg.gameId || msg.ownerId || msg.groupId || "");
+  const targetType = "game";
+  const targetId = String(msg.gameId || "");
   if (!targetId) return { ok: false, reason: "bad_input" };
   if (!rateLimitOk()) return { ok: false, reason: "rate_limit" };
 
-  if (targetType === "game") {
-    const { games } = await getStorage(["games"]);
-    const existing = (games || {})[targetId];
-    if (existing && existing.pollResolved) {
-      return { ok: false, reason: "already_reviewed", status: existing.status };
-    }
-    if (existing && (existing.status === STATUS.CONFIRMED || existing.status === STATUS.BANNED)) {
-      return { ok: false, reason: "already_flagged", status: existing.status };
-    }
-    if (existing && existing.status === STATUS.QUEUED && existing.pollMessageId) {
-      return { ok: false, reason: "already_pending" };
-    }
+  const { games } = await getStorage(["games"]);
+  const existing = (games || {})[targetId];
+  if (existing && existing.pollResolved) {
+    return { ok: false, reason: "already_reviewed", status: existing.status };
+  }
+  if (existing && (existing.status === STATUS.CONFIRMED || existing.status === STATUS.BANNED)) {
+    return { ok: false, reason: "already_flagged", status: existing.status };
+  }
+  if (existing && existing.status === STATUS.QUEUED && existing.pollMessageId) {
+    return { ok: false, reason: "already_pending" };
   }
 
   if (!dedupeCheck(targetType + ":" + targetId)) return { ok: false, reason: "duplicate" };
   STATE.reportHistory.push(Date.now());
 
-  const r = await postReport(msg);
+  const reportPayload = {
+    ...msg,
+    targetType: "game",
+    gameId: targetId,
+    gameName: msg.gameName,
+    gameUrl: msg.gameUrl,
+    ownerId: msg.ownerId || "",
+    ownerName: msg.ownerName || "",
+    ownerUrl: msg.ownerUrl || "",
+    groupId: msg.groupId || "",
+    groupName: msg.groupName || "",
+    groupUrl: msg.groupUrl || ""
+  };
+
+  const r = await postReport(reportPayload);
   if (r.ok) {
-    if (targetType === "game") {
-      await upsertGame(targetId, {
-        name: msg.gameName || "",
-        status: STATUS.QUEUED,
-        source: "user_report",
-        thumb: msg.thumb || "",
-        unlocked: false,
-        lastReportedAt: Date.now(),
-        pollMessageId: r.messageId || "",
-        pollCheckedAt: 0,
-        pollResolved: false,
-        ownerId: msg.ownerId || "",
-        ownerName: msg.ownerName || "",
-        groupId: msg.groupId || "",
-        groupName: msg.groupName || ""
-      });
-    } else {
-      const key = targetType + "s";
-      const cur = await getStorage([key]);
-      const map = cur[key] || {};
-      map[targetId] = {
-        id: targetId,
-        type: targetType,
-        name: targetType === "owner" ? (msg.ownerName || "") : (msg.groupName || ""),
-        url: targetType === "owner" ? (msg.ownerUrl || "") : (msg.groupUrl || ""),
-        status: STATUS.QUEUED,
-        pollMessageId: r.messageId || "",
-        pollResolved: false,
-        pollCheckedAt: 0,
-        addedAt: Date.now()
-      };
-      await setStorage({ [key]: map });
-    }
+    await upsertGame(targetId, {
+      name: msg.gameName || "",
+      status: STATUS.QUEUED,
+      source: "user_report",
+      thumb: msg.thumb || "",
+      unlocked: false,
+      lastReportedAt: Date.now(),
+      pollMessageId: r.messageId || "",
+      pollCheckedAt: 0,
+      pollResolved: false,
+      ownerId: msg.ownerId || "",
+      ownerName: msg.ownerName || "",
+      groupId: msg.groupId || "",
+      groupName: msg.groupName || ""
+    });
     const { totalVotes } = await getStorage(["totalVotes"]);
     await setStorage({ totalVotes: (totalVotes || 0) + 1 });
     setTimeout(() => { checkPendingPolls().catch(() => {}); }, 2500);
@@ -406,28 +400,41 @@ async function checkPendingPolls() {
   try {
     const url = _rw();
     if (!url) return { ok: false, reason: "net" };
-    const cur = await getStorage(["games", "reportsAccepted", "reportsRejected"]);
-    const games = cur.games || {};
+    const cur = await getStorage(["games", "owners", "groups", "reportsAccepted", "reportsRejected"]);
+    const games = { ...(cur.games || {}) };
+    const owners = { ...(cur.owners || {}) };
+    const groups = { ...(cur.groups || {}) };
+    const maps = { games, owners, groups };
     const now = Date.now();
-    const pending = Object.values(games).filter((g) =>
-      g && g.pollMessageId && !g.pollResolved &&
-      (g.status === STATUS.QUEUED || g.status === STATUS.FLAGGED || g.status === STATUS.MIXED) &&
-      (now - (g.pollCheckedAt || 0) > POLL_CHECK_COOLDOWN_MS)
-    );
+
+    function collectPending(mapObj) {
+      return Object.values(mapObj).filter((g) =>
+        g && g.pollMessageId && !g.pollResolved &&
+        (g.status === STATUS.QUEUED || g.status === STATUS.FLAGGED || g.status === STATUS.MIXED) &&
+        (now - (g.pollCheckedAt || 0) > POLL_CHECK_COOLDOWN_MS)
+      );
+    }
+
+    const pending = [
+      ...collectPending(games).map((g) => ({ bucket: "games", g })),
+      ...collectPending(owners).map((g) => ({ bucket: "owners", g })),
+      ...collectPending(groups).map((g) => ({ bucket: "groups", g }))
+    ];
     if (pending.length === 0) return { ok: true, checked: 0 };
 
     let accepted = cur.reportsAccepted || 0;
     let rejected = cur.reportsRejected || 0;
     let resolvedCount = 0;
 
-    for (const g of pending) {
+    for (const { bucket, g } of pending) {
+      const bucketMap = maps[bucket];
       try {
         const r = await fetch(url + "/messages/" + encodeURIComponent(g.pollMessageId), {
           credentials: "omit",
           referrerPolicy: "no-referrer"
         });
         if (!r.ok) {
-          games[g.id] = { ...g, pollCheckedAt: now };
+          bucketMap[g.id] = { ...g, pollCheckedAt: now };
           continue;
         }
         const m = await r.json();
@@ -442,7 +449,7 @@ async function checkPendingPolls() {
         const isFinal = !!(m.poll && m.poll.results && m.poll.results.is_finalized);
 
         if (total === 0) {
-          games[g.id] = { ...g, pollCheckedAt: now };
+          bucketMap[g.id] = { ...g, pollCheckedAt: now };
           continue;
         }
 
@@ -455,7 +462,7 @@ async function checkPendingPolls() {
         const prevStatus = g.status;
         const resolvedNow = isFinal || total >= 1;
 
-        games[g.id] = {
+        bucketMap[g.id] = {
           ...g,
           status: newStatus,
           pollCheckedAt: now,
@@ -470,11 +477,17 @@ async function checkPendingPolls() {
           resolvedCount++;
         }
       } catch (e) {
-        games[g.id] = { ...g, pollCheckedAt: now };
+        bucketMap[g.id] = { ...g, pollCheckedAt: now };
       }
     }
 
-    await setStorage({ games, reportsAccepted: accepted, reportsRejected: rejected });
+    await setStorage({
+      games: maps.games,
+      owners: maps.owners,
+      groups: maps.groups,
+      reportsAccepted: accepted,
+      reportsRejected: rejected
+    });
     STATE.lastSyncAt = now;
     return { ok: true, checked: pending.length, resolved: resolvedCount };
   } finally {
@@ -566,6 +579,174 @@ async function handleUnlock(gameId, permanent) {
   }
   await setStorage({ games: g });
   return { ok: true };
+}
+
+async function resolveRobloxUsername(username) {
+  const u = String(username || "").trim().replace(/^@/, "");
+  if (!u) return { ok: false, reason: "bad_input" };
+  try {
+    const r = await fetch("https://users.roblox.com/v1/usernames/users", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ usernames: [u], excludeBannedUsers: false }),
+      credentials: "omit",
+      referrerPolicy: "no-referrer",
+      mode: "cors"
+    });
+    if (!r.ok) return { ok: false, reason: "net" };
+    const j = await r.json();
+    const row = (j && j.data && j.data[0]) || null;
+    if (!row || !row.id) return { ok: false, reason: "not_found" };
+    return {
+      ok: true,
+      id: String(row.id),
+      name: String(row.name || row.requestedUsername || u),
+      url: "https://www.roblox.com/users/" + row.id + "/profile"
+    };
+  } catch (e) {
+    return { ok: false, reason: "net" };
+  }
+}
+
+async function resolveRobloxGroupKeyword(keyword) {
+  const k = String(keyword || "").trim();
+  if (!k) return { ok: false, reason: "bad_input" };
+  try {
+    const url = "https://groups.roblox.com/v1/groups/search?keyword=" + encodeURIComponent(k) + "&limit=10&prioritizeExactMatch=true";
+    const r = await fetch(url, { credentials: "omit", referrerPolicy: "no-referrer", mode: "cors" });
+    if (!r.ok) return { ok: false, reason: "net" };
+    const j = await r.json();
+    const list = (j && j.data) || [];
+    if (!list.length) return { ok: false, reason: "not_found" };
+    const exact = list.find((x) => x && x.name && String(x.name).toLowerCase() === k.toLowerCase());
+    const pick = exact || list[0];
+    const gid = pick && pick.id;
+    if (!gid) return { ok: false, reason: "not_found" };
+    return {
+      ok: true,
+      id: String(gid),
+      name: String(pick.name || k),
+      url: "https://www.roblox.com/communities/" + gid
+    };
+  } catch (e) {
+    return { ok: false, reason: "net" };
+  }
+}
+
+async function handleAdminSetCreator(msg) {
+  const kind = msg && msg.kind === "group" ? "group" : "owner";
+  const raw = String((msg && msg.username) || "").trim();
+  const status = String((msg && msg.status) || STATUS.CONFIRMED).toLowerCase();
+  const st = Object.values(STATUS).includes(status) ? status : STATUS.CONFIRMED;
+  const skipDiscord = !!(msg && msg.skipDiscord);
+
+  let id = "";
+  let name = "";
+  let profileUrl = "";
+  if (/^\d+$/.test(raw)) {
+    id = raw;
+    name = raw;
+    profileUrl = kind === "owner"
+      ? "https://www.roblox.com/users/" + id + "/profile"
+      : "https://www.roblox.com/communities/" + id;
+  } else {
+    const res = kind === "owner"
+      ? await resolveRobloxUsername(raw)
+      : await resolveRobloxGroupKeyword(raw);
+    if (!res.ok) return res;
+    id = res.id;
+    name = res.name;
+    profileUrl = res.url;
+  }
+
+  const key = kind === "group" ? "groups" : "owners";
+  const cur = await getStorage([key]);
+  const map = { ...(cur[key] || {}) };
+  const prev = map[id];
+
+  if (skipDiscord) {
+    map[id] = {
+      id,
+      type: kind,
+      name: name || raw,
+      url: profileUrl,
+      status: st,
+      pollMessageId: (prev && prev.pollMessageId) || "",
+      pollResolved: true,
+      pollCheckedAt: Date.now(),
+      addedAt: (prev && prev.addedAt) || Date.now(),
+      source: "admin_manual"
+    };
+    await setStorage({ [key]: map });
+    return { ok: true, id, name: map[id].name, kind, status: st, skipDiscord: true };
+  }
+
+  if (prev && prev.status === STATUS.QUEUED && prev.pollMessageId && !prev.pollResolved) {
+    return { ok: false, reason: "already_pending" };
+  }
+
+  const fakeMsg = {
+    targetType: kind,
+    gameId: "",
+    ownerId: kind === "owner" ? id : "",
+    ownerName: kind === "owner" ? name : "",
+    ownerUrl: kind === "owner" ? profileUrl : "",
+    groupId: kind === "group" ? id : "",
+    groupName: kind === "group" ? name : "",
+    groupUrl: kind === "group" ? profileUrl : "",
+    reason: String((msg && msg.reason) || "Admin flag from extension"),
+    reporter: "admin_popup"
+  };
+
+  if (!rateLimitOk()) return { ok: false, reason: "rate_limit" };
+  if (!dedupeCheck("admin_" + kind + ":" + id)) return { ok: false, reason: "duplicate" };
+  STATE.reportHistory.push(Date.now());
+
+  const r = await postReport(fakeMsg);
+  if (!r.ok) {
+    return r;
+  }
+
+  map[id] = {
+    id,
+    type: kind,
+    name: kind === "owner" ? fakeMsg.ownerName : fakeMsg.groupName,
+    url: kind === "owner" ? fakeMsg.ownerUrl : fakeMsg.groupUrl,
+    status: STATUS.QUEUED,
+    pollMessageId: r.messageId || "",
+    pollResolved: false,
+    pollCheckedAt: 0,
+    addedAt: Date.now(),
+    source: "admin_report"
+  };
+  await setStorage({ [key]: map });
+  setTimeout(() => { checkPendingPolls().catch(() => {}); }, 2500);
+  return { ok: true, id, name: map[id].name, kind, messageId: r.messageId || "" };
+}
+
+async function handleSetCreatorStatus(kind, id, status, info) {
+  const key = kind === "group" ? "groups" : "owners";
+  id = String(id || "");
+  if (!id) return { ok: false, reason: "bad_input" };
+  const cur = await getStorage([key]);
+  const map = { ...(cur[key] || {}) };
+  if (!map[id]) return { ok: false, reason: "not_found" };
+  const st = String(status || STATUS.CONFIRMED).toLowerCase();
+  const nextStatus = Object.values(STATUS).includes(st) ? st : STATUS.CONFIRMED;
+  const patch = {
+    status: nextStatus,
+    source: (info && info.source) || "manual"
+  };
+  if (info && info.name) patch.name = info.name;
+  if (info && info.url) patch.url = info.url;
+  map[id] = {
+    ...map[id],
+    ...patch,
+    id,
+    type: kind === "group" ? "group" : "owner"
+  };
+  await setStorage({ [key]: map });
+  return { ok: true, row: map[id] };
 }
 
 async function handleGetState() {
@@ -785,6 +966,17 @@ api.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         if (map[String(msg.id)]) delete map[String(msg.id)];
         await setStorage({ [kind]: map });
         return sendResponse({ ok: true });
+      }
+      if (msg.action === "adminSetCreator") {
+        return sendResponse(await handleAdminSetCreator(msg));
+      }
+      if (msg.action === "setCreatorStatus") {
+        return sendResponse(await handleSetCreatorStatus(
+          msg.kind === "group" ? "group" : "owner",
+          msg.id,
+          msg.status,
+          msg.info
+        ));
       }
       if (msg.action === "clearData") return sendResponse(await handleClearData());
 
