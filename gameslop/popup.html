@@ -10,17 +10,9 @@
     <aside class="side">
       <div class="side-brand">
         <div class="brand-glyph">
-          <svg viewBox="0 0 40 40" width="32" height="32">
-            <defs>
-              <linearGradient id="g1" x1="0" y1="0" x2="1" y2="1">
-                <stop offset="0" stop-color="#a855f7"/>
-                <stop offset="1" stop-color="#06b6d4"/>
-              </linearGradient>
-            </defs>
-            <rect x="4" y="10" width="32" height="24" rx="6" fill="none" stroke="url(#g1)" stroke-width="2.5"/>
-            <circle cx="12" cy="22" r="2" fill="#a855f7"/>
-            <circle cx="28" cy="22" r="2" fill="#06b6d4"/>
-            <path d="M8 4h24" stroke="url(#g1)" stroke-width="2.5" stroke-linecap="round"/>
+          <svg viewBox="0 0 40 40" width="28" height="28" aria-hidden="true">
+            <rect x="5" y="11" width="30" height="22" rx="5" fill="none" stroke="currentColor" stroke-width="1.75"/>
+            <path d="M9 7h22" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/>
           </svg>
         </div>
         <div class="brand-text">
@@ -71,23 +63,19 @@
         </div>
 
         <div class="tiles">
-          <div class="tile tile-grad-a">
-            <div class="tile-ico">🚫</div>
+          <div class="tile">
             <div class="tile-num" id="ov-flagged">0</div>
             <div class="tile-k">Flagged</div>
           </div>
-          <div class="tile tile-grad-b">
-            <div class="tile-ico">✓</div>
+          <div class="tile">
             <div class="tile-num" id="ov-confirmed">0</div>
             <div class="tile-k">Confirmed</div>
           </div>
-          <div class="tile tile-grad-c">
-            <div class="tile-ico">⏳</div>
+          <div class="tile">
             <div class="tile-num" id="ov-queued">0</div>
             <div class="tile-k">Pending</div>
           </div>
-          <div class="tile tile-grad-d">
-            <div class="tile-ico">🔨</div>
+          <div class="tile">
             <div class="tile-num" id="ov-banned">0</div>
             <div class="tile-k">Banned</div>
           </div>
