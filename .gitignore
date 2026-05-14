@@ -2,3 +2,4 @@ node_modules/
 .DS_Store
 *.log
 web-ext-artifacts/
+presentations/benevento_assets/
